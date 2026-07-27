@@ -1,0 +1,912 @@
+USER-SUPPLIED VALUES:
+grafana:
+  adminPassword: admin123
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - disableDeletion: false
+        folder: Istio
+        name: istio
+        options:
+          path: /var/lib/grafana/dashboards/istio
+        type: file
+      - disableDeletion: false
+        folder: SRE
+        name: sre
+        options:
+          path: /var/lib/grafana/dashboards/sre
+        type: file
+  dashboards:
+    istio:
+      istio-mesh:
+        datasource:
+        - name: DS_PROMETHEUS
+          value: Prometheus
+        gnetId: 7639
+        revision: 1
+      istio-service:
+        datasource:
+        - name: DS_PROMETHEUS
+          value: Prometheus
+        gnetId: 7636
+        revision: 1
+      istio-workload:
+        datasource:
+        - name: DS_PROMETHEUS
+          value: Prometheus
+        gnetId: 7630
+        revision: 1
+      k8s-cluster:
+        datasource:
+        - name: DS_PROMETHEUS
+          value: Prometheus
+        gnetId: 6417
+        revision: 1
+  dashboardsConfigMaps:
+    sre: sre-dashboards
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - access: proxy
+        isDefault: true
+        name: Prometheus
+        type: prometheus
+        uid: prometheus
+        url: http://obs-prometheus-server.monitoring.svc.cluster.local
+      - access: proxy
+        name: Loki
+        type: loki
+        uid: loki
+        url: http://loki.monitoring.svc.cluster.local:3100
+      - access: proxy
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: true
+            tags:
+            - key: k8s.namespace.name
+              value: namespace
+            - key: k8s.pod.name
+              value: pod
+        name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo.monitoring.svc.cluster.local:3200
+  env:
+    GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/istio/istio-mesh.json
+  fullnameOverride: grafana
+  grafana.ini:
+    panels:
+      disable_sanitize_html: true
+    unified_alerting:
+      enabled: false
+  persistence:
+    enabled: false
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  service:
+    nodePort: 32000
+    type: NodePort
+kiali:
+  auth:
+    strategy: anonymous
+  deployment:
+    service_type: NodePort
+  external_services:
+    grafana:
+      enabled: true
+      in_cluster_url: http://grafana.monitoring.svc.cluster.local:80
+      url: http://10.0.2.15:32000
+    prometheus:
+      url: http://obs-prometheus-server.monitoring.svc.cluster.local
+    tracing:
+      enabled: true
+      in_cluster_url: http://tempo.monitoring.svc.cluster.local:3200
+      provider: tempo
+      url: http://tempo.monitoring.svc.cluster.local:3200
+      use_grpc: false
+  server:
+    port: 20001
+loki:
+  backend:
+    replicas: 0
+  chunksCache:
+    enabled: false
+  deploymentMode: SingleBinary
+  fullnameOverride: loki
+  gateway:
+    enabled: false
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    distributor:
+      otlp_config:
+        default_resource_attributes_as_index_labels:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.deployment.name
+        - k8s.node.name
+    limits_config:
+      allow_structured_metadata: true
+      volume_enabled: true
+    schemaConfig:
+      configs:
+      - from: "2024-01-01"
+        index:
+          period: 24h
+          prefix: index_
+        object_store: filesystem
+        schema: v13
+        store: tsdb
+    storage:
+      type: filesystem
+  monitoring:
+    lokiCanary:
+      enabled: false
+    selfMonitoring:
+      enabled: false
+      grafanaAgent:
+        installOperator: false
+  read:
+    replicas: 0
+  resultsCache:
+    enabled: false
+  singleBinary:
+    replicas: 1
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+  test:
+    enabled: false
+  write:
+    replicas: 0
+otelAgent:
+  command:
+    name: otelcol-contrib
+  config:
+    exporters:
+      otlphttp/loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+        tls:
+          insecure: true
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+    service:
+      pipelines:
+        logs:
+          exporters:
+          - otlphttp/loki
+          processors:
+          - memory_limiter
+          - k8sattributes
+          - batch
+          receivers:
+          - filelog
+  fullnameOverride: otel-agent
+  image:
+    pullPolicy: IfNotPresent
+    repository: otel/opentelemetry-collector-contrib
+    tag: 0.114.0
+  mode: daemonset
+  presets:
+    kubernetesAttributes:
+      enabled: true
+    logsCollection:
+      enabled: true
+      includeCollectorLogs: false
+  resources:
+    limits:
+      cpu: 200m
+      memory: 400Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+otelGateway:
+  command:
+    name: otelcol-contrib
+  config:
+    exporters:
+      debug:
+        verbosity: basic
+      otlp/tempo:
+        endpoint: tempo.monitoring.svc.cluster.local:4317
+        tls:
+          insecure: true
+      otlphttp/loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+        tls:
+          insecure: true
+      prometheusremotewrite:
+        endpoint: http://obs-prometheus-server.monitoring.svc.cluster.local/api/v1/write
+        tls:
+          insecure: true
+    processors:
+      batch:
+        send_batch_size: 512
+        timeout: 5s
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 200
+        spike_limit_mib: 50
+      resource:
+        attributes:
+        - action: upsert
+          key: cluster
+          value: k3s-stage
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      zipkin:
+        endpoint: 0.0.0.0:9411
+    service:
+      pipelines:
+        logs:
+          exporters:
+          - otlphttp/loki
+          processors:
+          - memory_limiter
+          - batch
+          - resource
+          receivers:
+          - otlp
+        metrics:
+          exporters:
+          - prometheusremotewrite
+          processors:
+          - memory_limiter
+          - batch
+          - resource
+          receivers:
+          - otlp
+        traces:
+          exporters:
+          - otlp/tempo
+          - debug
+          processors:
+          - memory_limiter
+          - batch
+          - resource
+          receivers:
+          - otlp
+          - zipkin
+  fullnameOverride: otel-collector
+  image:
+    pullPolicy: IfNotPresent
+    repository: otel/opentelemetry-collector-contrib
+    tag: 0.114.0
+  mode: deployment
+  ports:
+    metrics:
+      enabled: false
+    otlp:
+      containerPort: 4317
+      enabled: true
+      protocol: TCP
+      servicePort: 4317
+    otlp-http:
+      containerPort: 4318
+      enabled: true
+      protocol: TCP
+      servicePort: 4318
+    zipkin:
+      containerPort: 9411
+      enabled: true
+      protocol: TCP
+      servicePort: 9411
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+prometheus:
+  alertmanager:
+    config:
+      global:
+        resolve_timeout: 5m
+      inhibit_rules:
+      - equal:
+        - slo
+        source_match:
+          alertname: CheckoutFastBurn
+        target_match:
+          alertname: CheckoutSlowBurn
+      - equal:
+        - slo
+        source_match:
+          alertname: FrontendFastBurn
+        target_match:
+          alertname: FrontendSlowBurn
+      - equal:
+        - slo
+        source_match:
+          alertname: ProductCatalogFastBurn
+        target_match:
+          alertname: ProductCatalogSlowBurn
+      - equal:
+        - slo
+        source_match:
+          alertname: CartFastBurn
+        target_match:
+          alertname: CartSlowBurn
+      - equal:
+        - slo
+        source_match:
+          alertname: ProductCatalogFastBurn
+        target_match:
+          alertname: ProductCatalogDegraded
+      - equal:
+        - slo
+        source_match:
+          alertname: CartFastBurn
+        target_match:
+          alertname: CartDegraded
+      - source_match_re:
+          alertname: (Checkout|Frontend|ProductCatalog|Cart)(FastBurn|SlowBurn|Degraded)
+        target_match_re:
+          alertname: UserJourney(FastBurn|SlowBurn|Degraded)
+      - equal:
+        - slo
+        source_match:
+          alertname: UserJourneyFastBurn
+        target_match_re:
+          alertname: UserJourney(SlowBurn|Degraded)
+      receivers:
+      - name: holmes-bridge
+        webhook_configs:
+        - max_alerts: 5
+          send_resolved: false
+          url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
+      - name: default
+        slack_configs:
+        - actions:
+          - text: "\U0001F4CA Voir le Dashboard"
+            type: button
+            url: '{{ .CommonAnnotations.runbook_url }}'
+          api_url_file: /etc/alertmanager/secrets/slack-url-default
+          color: '{{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical"
+            }}danger{{ else }}warning{{ end }}{{ else }}good{{ end }}'
+          footer: Prometheus Alertmanager — Online Boutique
+          send_resolved: true
+          text: '*Service concerné :* `{{ .CommonLabels.slo }}` *Sévérité :* {{ .CommonLabels.severity
+            }} *Description :* {{ .CommonAnnotations.description }} {{ if eq .Status
+            "firing" }}*Depuis :* {{ .CommonAnnotations.summary }}{{ end }}'
+          title: "{{ if eq .Status \"firing\" }}\U0001F534{{ else }}✅{{ end }} [{{
+            .Status | toUpper }}] {{ .CommonLabels.alertname }}"
+          title_link: '{{ .CommonAnnotations.runbook_url }}'
+      - name: slack-critical
+        slack_configs:
+        - actions:
+          - text: "\U0001F4CA Voir le Dashboard"
+            type: button
+            url: '{{ .CommonAnnotations.runbook_url }}'
+          api_url_file: /etc/alertmanager/secrets/slack-url-critical
+          color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+          footer: Prometheus Alertmanager — Online Boutique — Canal Critique
+          send_resolved: true
+          text: '*Parcours impacté :* `{{ .CommonLabels.slo }}` *Description :* {{
+            .CommonAnnotations.description }} {{ if eq .Status "firing" }}⚠️ *Action
+            requise — impact direct sur l''expérience utilisateur*{{ else }}✅ *Résolu
+            — situation revenue à la normale*{{ end }}'
+          title: "{{ if eq .Status \"firing\" }}\U0001F6A8{{ else }}✅{{ end }} [{{
+            .Status | toUpper }}] {{ .CommonLabels.alertname }} — CRITIQUE"
+          title_link: '{{ .CommonAnnotations.runbook_url }}'
+      - name: watchdog-channel
+        slack_configs:
+        - api_url_file: /etc/alertmanager/secrets/slack-url-default
+          color: good
+          footer: Prometheus Alertmanager — Heartbeat
+          send_resolved: false
+          text: Ce message se répète toutes les 5 minutes tant que Prometheus/Alertmanager
+            fonctionnent normalement. Son absence prolongée indique une panne de la
+            chaîne de monitoring elle-même.
+          title: "\U0001F493 Watchdog — monitoring actif"
+      route:
+        group_by:
+        - alertname
+        - slo
+        group_interval: 5m
+        group_wait: 30s
+        receiver: default
+        repeat_interval: 4h
+        routes:
+        - match:
+            alertname: Watchdog
+          receiver: watchdog-channel
+          repeat_interval: 5m
+        - continue: true
+          group_interval: 5m
+          group_wait: 30s
+          match_re:
+            severity: critical|warning
+          receiver: holmes-bridge
+          repeat_interval: 4h
+        - continue: false
+          match:
+            severity: critical
+          receiver: slack-critical
+        - continue: false
+          match:
+            severity: warning
+          receiver: default
+    enabled: true
+    extraSecretMounts:
+    - mountPath: /etc/alertmanager/secrets
+      name: slack-webhook
+      readOnly: true
+      secretName: alertmanager-slack-webhook
+    persistence:
+      enabled: false
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 25m
+        memory: 64Mi
+  fullnameOverride: prometheus
+  kube-state-metrics:
+    enabled: true
+  prometheus-node-exporter:
+    enabled: true
+  prometheus-pushgateway:
+    enabled: false
+  server:
+    extraFlags:
+    - web.enable-lifecycle
+    - web.enable-remote-write-receiver
+    persistentVolume:
+      enabled: false
+    resources:
+      limits:
+        cpu: 300m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+    service:
+      type: ClusterIP
+  serverFiles:
+    alerting_rules.yml:
+      groups:
+      - name: user_facing_slo_alerts
+        rules:
+        - alert: CheckoutFastBurn
+          annotations:
+            description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil critique: 14.4x). Le parcours achat (checkout/payment/shipping)
+              est en échec depuis plus de 1 minute — impact direct sur le revenu.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Checkout Success Rate en burn rapide
+          expr: slo:checkout_success:burnrate5m > 14.4 and slo:checkout_success:burnrate1h
+            > 14.4
+          for: 1m
+          labels:
+            severity: critical
+            slo: checkout_success
+        - alert: CheckoutSlowBurn
+          annotations:
+            description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m
+              et 6h — surveiller avant que ça devienne critique.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Checkout Success Rate en dégradation lente
+          expr: slo:checkout_success:burnrate30m > 6 and slo:checkout_success:burnrate6h
+            > 6
+          for: 15m
+          labels:
+            severity: warning
+            slo: checkout_success
+        - alert: FrontendFastBurn
+          annotations:
+            description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil critique: 14.4x). Le point d''entrée principal
+              du site est en échec depuis plus de 1 minute — tous les utilisateurs
+              sont potentiellement impactés.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Frontend Availability en burn rapide
+          expr: slo:frontend_availability:burnrate5m > 14.4 and slo:frontend_availability:burnrate1h
+            > 14.4
+          for: 1m
+          labels:
+            severity: critical
+            slo: frontend_availability
+        - alert: FrontendSlowBurn
+          annotations:
+            description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m
+              et 6h.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Frontend Availability en dégradation lente
+          expr: slo:frontend_availability:burnrate30m > 6 and slo:frontend_availability:burnrate6h
+            > 6
+          for: 15m
+          labels:
+            severity: warning
+            slo: frontend_availability
+        - alert: ProductCatalogFastBurn
+          annotations:
+            description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil critique: 14.4x). Le service productcatalogservice
+              est en échec depuis plus de 1 minute — impact direct sur la navigation
+              et le catalogue produit.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Product Catalog en burn rapide
+          expr: slo:productcatalog_availability:burnrate5m > 14.4 and slo:productcatalog_availability:burnrate1h
+            > 14.4
+          for: 1m
+          labels:
+            severity: critical
+            slo: productcatalog_availability
+        - alert: ProductCatalogSlowBurn
+          annotations:
+            description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m
+              et 6h — vérifier les logs et les redémarrages récents avant que ça devienne
+              critique.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Product Catalog en dégradation lente
+          expr: slo:productcatalog_availability:burnrate30m > 6 and slo:productcatalog_availability:burnrate6h
+            > 6
+          for: 15m
+          labels:
+            severity: warning
+            slo: productcatalog_availability
+        - alert: CartFastBurn
+          annotations:
+            description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil critique: 14.4x). Le service cartservice est en
+              échec depuis plus de 1 minute — impact direct sur le panier et donc
+              le funnel d''achat, possible panne redis-cart en amont.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Cart en burn rapide
+          expr: slo:cart_availability:burnrate5m > 14.4 and slo:cart_availability:burnrate1h
+            > 14.4
+          for: 1m
+          labels:
+            severity: critical
+            slo: cart_availability
+        - alert: CartSlowBurn
+          annotations:
+            description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m
+              et 6h — vérifier redis-cart en amont.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Cart en dégradation lente
+          expr: slo:cart_availability:burnrate30m > 6 and slo:cart_availability:burnrate6h
+            > 6
+          for: 15m
+          labels:
+            severity: warning
+            slo: cart_availability
+        - alert: ProductCatalogDegraded
+          annotations:
+            description: 'Taux de succès actuel (5m) = {{ $value | humanizePercentage
+              }} (seuil : 99 %). Le service productcatalogservice échoue par intermittence
+              depuis plus de 5 minutes — vérifier l''état des pods (redémarrages,
+              kills) et la navigation catalogue.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Product Catalog dégradé (SLI < 99 %)
+          expr: sli:productcatalog_availability:ratio5m < 0.99
+          for: 5m
+          labels:
+            severity: warning
+            slo: productcatalog_availability
+        - alert: CartDegraded
+          annotations:
+            description: 'Taux de succès actuel (5m) = {{ $value | humanizePercentage
+              }} (seuil : 99 %). Le service cartservice échoue depuis plus de 5 minutes
+              — possible panne redis-cart en amont (dépendance non instrumentable,
+              détection via le SLI du consommateur).'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Cart dégradé (SLI < 99 %)
+          expr: sli:cart_availability:ratio5m < 0.99
+          for: 5m
+          labels:
+            severity: warning
+            slo: cart_availability
+        - alert: UserJourneyFastBurn
+          annotations:
+            description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil critique: 14.4x). Le parcours composite (frontend
+              → catalogue → panier → checkout) est en échec — dégradation bout-en-bout
+              de l''expérience utilisateur. SLI approché par produit des 4 maillons
+              (voir recording rule).'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Parcours utilisateur en burn rapide
+          expr: slo:user_journey_success:burnrate5m > 14.4 and slo:user_journey_success:burnrate1h
+            > 14.4
+          for: 1m
+          labels:
+            severity: critical
+            slo: user_journey_success
+        - alert: UserJourneySlowBurn
+          annotations:
+            description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le
+              taux tolérable (seuil: 6x). Dégradation progressive du parcours composite
+              sur 30m et 6h — identifier le maillon en cause via les burn rates par
+              service.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Parcours utilisateur en dégradation lente
+          expr: slo:user_journey_success:burnrate30m > 6 and slo:user_journey_success:burnrate6h
+            > 6
+          for: 15m
+          labels:
+            severity: warning
+            slo: user_journey_success
+        - alert: UserJourneyDegraded
+          annotations:
+            description: 'Taux de succès composite actuel (5m) = {{ $value | humanizePercentage
+              }} (SLO : 99,5 %). Un des 4 maillons du parcours (frontend/catalogue/panier/checkout)
+              se dégrade depuis plus de 5 minutes — comparer les SLI par service pour
+              isoler le maillon.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Parcours utilisateur dégradé (SLI < 99,5 %)
+          expr: sli:user_journey_success:ratio5m < 0.995
+          for: 5m
+          labels:
+            severity: warning
+            slo: user_journey_success
+        - alert: PodRestartingFrequently
+          annotations:
+            description: '{{ $value | printf "%.0f" }} redémarrage(s) détecté(s) sur
+              le pod {{ $labels.pod }} (conteneur {{ $labels.container }}) dans les
+              15 dernières minutes — vérifier OOM/liveness probe.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Pod {{ $labels.pod }} a redémarré récemment
+          expr: increase(kube_pod_container_status_restarts_total{namespace="online-boutique"}[15m])
+            > 2
+          for: 2m
+          labels:
+            severity: warning
+            slo: infra
+        - alert: CheckoutHighLatencyP99
+          annotations:
+            description: 'P99 actuel = {{ $value | printf "%.0f" }} ms (seuil : 1000
+              ms).'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Latence P99 checkout > 1s
+          expr: sli:checkout_latency_p99ms:5m > 1000
+          for: 2m
+          labels:
+            severity: warning
+            slo: checkout_latency
+        - alert: FrontendHighLatencyP99
+          annotations:
+            description: 'P99 actuel = {{ $value | printf "%.0f" }} ms (seuil : 800
+              ms) — expérience utilisateur dégradée sur le point d''entrée sans erreurs
+              visibles ; possible famine CPU (throttling) : vérifier le panel CPU
+              Usage per Pod.'
+            runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+            summary: Latence P99 frontend > 800 ms
+          expr: sli:frontend_latency_p99ms:5m > 800
+          for: 2m
+          labels:
+            severity: warning
+            slo: frontend_latency
+      - name: meta_monitoring
+        rules:
+        - alert: Watchdog
+          annotations:
+            description: Ce message se répète toutes les 5 minutes. Son absence prolongée
+              indique une panne d'Alertmanager ou de Prometheus.
+            summary: Heartbeat monitoring actif
+          expr: vector(1)
+          labels:
+            severity: none
+    recording_rules.yml:
+      groups:
+      - name: user_facing_sli
+        rules:
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[5m]))
+          record: sli:checkout_success:ratio5m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[30m]))
+          record: sli:checkout_success:ratio30m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[1h]))
+          record: sli:checkout_success:ratio1h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[6h]))
+          record: sli:checkout_success:ratio6h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30d]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[30d]))
+          record: sli:checkout_success:ratio30d
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[5m]))
+          record: sli:frontend_availability:ratio5m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[30m]))
+          record: sli:frontend_availability:ratio30m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[1h]))
+          record: sli:frontend_availability:ratio1h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[6h]))
+          record: sli:frontend_availability:ratio6h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30d]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[30d]))
+          record: sli:frontend_availability:ratio30d
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[5m]))
+          record: sli:productcatalog_availability:ratio5m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[30m]))
+          record: sli:productcatalog_availability:ratio30m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[1h]))
+          record: sli:productcatalog_availability:ratio1h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[6h]))
+          record: sli:productcatalog_availability:ratio6h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[5m]))
+          record: sli:cart_availability:ratio5m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[30m]))
+          record: sli:cart_availability:ratio30m
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[1h]))
+          record: sli:cart_availability:ratio1h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[6h]))
+          record: sli:cart_availability:ratio6h
+        - expr: |
+            sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="redis-cart",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+            / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="redis-cart"}[5m]))
+          record: sli:redis_cart_availability:ratio5m
+        - expr: |
+            histogram_quantile(0.99,
+              sum(rate(istio_request_duration_milliseconds_bucket{reporter=~"source|waypoint",destination_workload="checkoutservice"}[5m])) by (le)
+            )
+          record: sli:checkout_latency_p99ms:5m
+        - expr: |
+            sum(increase(kube_pod_container_status_restarts_total{namespace="online-boutique",pod=~"recommendationservice.*",container="server"}[15m]))
+          record: chaos:recommendation_restarts:increase15m
+        - expr: |
+            histogram_quantile(0.99,
+              sum(rate(istio_request_duration_milliseconds_bucket{reporter=~"source|waypoint",destination_workload="frontend"}[5m])) by (le)
+            )
+          record: sli:frontend_latency_p99ms:5m
+        - expr: |
+            sli:frontend_availability:ratio5m
+            * sli:productcatalog_availability:ratio5m
+            * sli:cart_availability:ratio5m
+            * sli:checkout_success:ratio5m
+          record: sli:user_journey_success:ratio5m
+        - expr: |
+            sli:frontend_availability:ratio30m
+            * sli:productcatalog_availability:ratio30m
+            * sli:cart_availability:ratio30m
+            * sli:checkout_success:ratio30m
+          record: sli:user_journey_success:ratio30m
+        - expr: |
+            sli:frontend_availability:ratio1h
+            * sli:productcatalog_availability:ratio1h
+            * sli:cart_availability:ratio1h
+            * sli:checkout_success:ratio1h
+          record: sli:user_journey_success:ratio1h
+        - expr: |
+            sli:frontend_availability:ratio6h
+            * sli:productcatalog_availability:ratio6h
+            * sli:cart_availability:ratio6h
+            * sli:checkout_success:ratio6h
+          record: sli:user_journey_success:ratio6h
+      - name: user_facing_slo
+        rules:
+        - expr: (1 - sli:checkout_success:ratio5m) / 0.0005
+          record: slo:checkout_success:burnrate5m
+        - expr: (1 - sli:checkout_success:ratio30m) / 0.0005
+          record: slo:checkout_success:burnrate30m
+        - expr: (1 - sli:checkout_success:ratio1h) / 0.0005
+          record: slo:checkout_success:burnrate1h
+        - expr: (1 - sli:checkout_success:ratio6h) / 0.0005
+          record: slo:checkout_success:burnrate6h
+        - expr: (1 - sli:frontend_availability:ratio5m) / 0.001
+          record: slo:frontend_availability:burnrate5m
+        - expr: (1 - sli:frontend_availability:ratio30m) / 0.001
+          record: slo:frontend_availability:burnrate30m
+        - expr: (1 - sli:frontend_availability:ratio1h) / 0.001
+          record: slo:frontend_availability:burnrate1h
+        - expr: (1 - sli:frontend_availability:ratio6h) / 0.001
+          record: slo:frontend_availability:burnrate6h
+        - expr: 100 * (1 - ((1 - sli:checkout_success:ratio30d) / 0.0005))
+          record: slo:checkout_success:error_budget_remaining_ratio
+        - expr: 100 * (1 - ((1 - sli:frontend_availability:ratio30d) / 0.001))
+          record: slo:frontend_availability:error_budget_remaining_ratio
+        - expr: (1 - sli:productcatalog_availability:ratio5m) / 0.01
+          record: slo:productcatalog_availability:burnrate5m
+        - expr: (1 - sli:productcatalog_availability:ratio1h) / 0.01
+          record: slo:productcatalog_availability:burnrate1h
+        - expr: (1 - sli:productcatalog_availability:ratio30m) / 0.01
+          record: slo:productcatalog_availability:burnrate30m
+        - expr: (1 - sli:productcatalog_availability:ratio6h) / 0.01
+          record: slo:productcatalog_availability:burnrate6h
+        - expr: (1 - sli:cart_availability:ratio5m) / 0.01
+          record: slo:cart_availability:burnrate5m
+        - expr: (1 - sli:cart_availability:ratio1h) / 0.01
+          record: slo:cart_availability:burnrate1h
+        - expr: (1 - sli:cart_availability:ratio30m) / 0.01
+          record: slo:cart_availability:burnrate30m
+        - expr: (1 - sli:cart_availability:ratio6h) / 0.01
+          record: slo:cart_availability:burnrate6h
+        - expr: (1 - sli:user_journey_success:ratio5m) / 0.005
+          record: slo:user_journey_success:burnrate5m
+        - expr: (1 - sli:user_journey_success:ratio30m) / 0.005
+          record: slo:user_journey_success:burnrate30m
+        - expr: (1 - sli:user_journey_success:ratio1h) / 0.005
+          record: slo:user_journey_success:burnrate1h
+        - expr: (1 - sli:user_journey_success:ratio6h) / 0.005
+          record: slo:user_journey_success:burnrate6h
+tempo:
+  fullnameOverride: tempo
+  persistence:
+    enabled: true
+    size: 10Gi
+  service:
+    type: ClusterIP
+  serviceMonitor:
+    enabled: false
+  tempo:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      zipkin:
+        endpoint: 0.0.0.0:9411
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 50m
+        memory: 256Mi
+    retention: 24h
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
