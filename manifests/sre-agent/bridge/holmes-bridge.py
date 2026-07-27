@@ -60,6 +60,14 @@ _seen = {}           # fingerprint -> timestamp (persisté dans DEDUP_STATE_FILE
 _hour_window = []    # timestamps des investigations lancées
 _lock = threading.Lock()
 
+# Chaînage diagnostic -> post-mortem : le diagnostic rendu À CHAUD pendant
+# l'incident est conservé (par fingerprint) et injecté dans le prompt du
+# post-mortem — l'agent confronte alors ses mesures d'après-coup aux preuves
+# capturées au moment des faits, au lieu d'enquêter de mémoire froide.
+DIAG_STATE_FILE = os.environ.get("DIAG_STATE_FILE", "/state/diags.json")
+DIAG_TTL_S = int(os.environ.get("DIAG_TTL_S", "86400"))   # 24 h
+_diags = {}          # fingerprint -> {"t": ts, "text": diagnostic}
+
 SEV_COLORS = {"critical": "#D40E0D", "warning": "#F2A100"}
 
 PROMPT = """Tu es l'agent SRE de la plateforme Online Boutique (K3s mono-node,
@@ -72,16 +80,36 @@ L'alerte Prometheus suivante vient de passer en firing :
 - description : {description}
 - labels : {labels}
 
-Mène l'enquête avec tes outils (PromQL sur les recording rules sli:* et slo:*,
-kubectl, logs) et rends un diagnostic en FRANÇAIS.
+AVANT de conclure, tu DOIS avoir exécuté TOI-MÊME, avec tes outils, au
+minimum ces 3 inspections (ne saute aucune étape) :
+a) une requête PromQL ventilant les erreurs par service pour localiser le
+   coupable, par exemple :
+   sum by (destination_workload, grpc_response_status)
+     (rate(istio_requests_total{{grpc_response_status=~"2|4|8|12|13|14|15"}}[5m]))
+b) la lecture des LOGS des pods du ou des services que (a) incrimine ;
+c) kubectl describe / events de ces pods (restarts, OOM, probes).
+RÈGLE ABSOLUE : ne recommande JAMAIS à l'humain une action d'inspection
+(« vérifier les logs », « analyser les métriques ») que tes outils te
+permettent de faire toi-même — fais-la pendant l'enquête et cite le résultat.
+
+Rends un diagnostic en FRANÇAIS.
 IMPÉRATIF : ta TOUTE PREMIÈRE ligne doit être exactement de la forme
 « Verdict : <cause racine en une phrase> » (c'est la seule ligne visible dans
 la notification Slack), suivie d'une ligne vide. Puis structure ainsi :
-1. Cause racine la plus probable (développée).
-2. Preuves (valeurs mesurées : SLI, burn rate, statuts gRPC, état des pods).
+1. Cause racine la plus probable (développée, avec le service précis).
+2. Preuves (valeurs mesurées : SLI, burn rate, codes gRPC PAR SERVICE,
+   extraits de logs, état des pods).
 3. Vérification clé : les pods sont-ils Running/Ready ? (si oui et que le SLI
    plonge, dis explicitement que c'est une panne invisible pour Kubernetes).
-4. Actions recommandées (2-3, concrètes, commandes incluses).
+4. Actions CORRECTIVES recommandées — uniquement de la remédiation (jamais de
+   l'inspection), classées :
+   a) mitigation immédiate (ex. rollout restart du service incriminé),
+   b) correctif durable si identifiable,
+   c) prévention.
+   Chaque action cite la preuve qui la justifie et donne la commande exacte
+   avec les VRAIS noms de ressources (ex. `deploy/paymentservice`, jamais un
+   nom de pod recopié en nom de deployment). Si tu n'as pas la preuve qu'une
+   action corrigera le problème, dis-le au lieu de la recommander.
 Sois factuel : cite uniquement ce que tes outils ont réellement retourné."""
 
 PROMPT_POSTMORTEM = """Tu es l'agent SRE de la plateforme Online Boutique
@@ -91,20 +119,27 @@ de se RÉSOUDRE — rédige un brouillon de post-mortem SANS BLÂME, en FRANÇAI
 - alertname : {alertname}  (sévérité {severity}, slo {slo})
 - début : {starts_at} — fin : {ends_at}
 - description initiale : {description}
-
+{prior_diag}
 IMPÉRATIF : ta TOUTE PREMIÈRE ligne doit être exactement de la forme
 « Verdict : <cause racine et durée en une phrase> », suivie d'une ligne vide.
-Avec tes outils (PromQL sur sli:* / slo:*, kubectl, logs), reconstitue la
-fenêtre de l'incident et produis :
-1. Chronologie (début, pic, retour au nominal — avec les valeurs de SLI/burn
-   rate mesurées sur la fenêtre).
-2. Cause racine probable et périmètre impacté.
-3. Impact contractuel : durée, et budget d'erreur consommé
-   (slo:*:error_budget_remaining_ratio avant/après si disponible).
+AVANT de rédiger, tu DOIS avoir exécuté TOI-MÊME :
+a) des RANGE QUERIES Prometheus sur la fenêtre EXACTE de l'incident
+   (start={starts_at}, end={ends_at}, élargie de 15 min de chaque côté) sur
+   le SLI et le burn rate concernés — pas des instant queries d'après-coup ;
+b) la lecture des logs des pods impliqués sur cette fenêtre ;
+c) le budget d'erreur avant/après (slo:*:error_budget_remaining_ratio).
+Puis produis :
+1. Chronologie (début, pic, retour au nominal — valeurs mesurées à l'appui).
+2. Cause racine probable et périmètre impacté. Si un diagnostic à chaud est
+   fourni ci-dessus, CONFRONTE-le à tes mesures : confirme-le ou corrige-le
+   explicitement.
+3. Impact contractuel : durée, et budget d'erreur consommé (avant/après).
 4. Recommandations de PRÉVENTION classées :
    a) Configuration (limits, replicas, PDB…),
    b) Alerting (seuil/fenêtre à ajuster, angle mort éventuel),
    c) Architecture (retry, timeout, isolation de dépendance).
+RÈGLE : chaque recommandation doit citer la preuve mesurée qui la motive ;
+une recommandation générique sans preuve est interdite — supprime-la.
 Sois factuel : cite uniquement ce que tes outils ont réellement retourné."""
 
 
@@ -134,6 +169,35 @@ def _save_seen():
         os.replace(tmp, DEDUP_STATE_FILE)
     except Exception as e:
         log(f"state save error: {e}")
+
+
+def _load_diags():
+    try:
+        with open(DIAG_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _store_diag(fp, text):
+    now = time.time()
+    with _lock:
+        for k in [k for k, v in _diags.items() if now - v.get("t", 0) > DIAG_TTL_S]:
+            del _diags[k]
+        _diags[fp] = {"t": now, "text": text[:4000]}
+        try:
+            tmp = DIAG_STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(_diags, f)
+            os.replace(tmp, DIAG_STATE_FILE)
+        except Exception as e:
+            log(f"diag save error: {e}")
+
+
+def _alert_fp(alert):
+    labels = alert.get("labels", {})
+    return (alert.get("fingerprint")
+            or (labels.get("alertname", "") + alert.get("startsAt", "")))
 
 
 # --------------------------------------------------------------------------
@@ -237,7 +301,13 @@ def _call_holmes(ask):
 def investigate(alert, postmortem=False):
     labels = alert.get("labels", {})
     ann = alert.get("annotations", {})
+    fp = _alert_fp(alert)
     if postmortem:
+        prior = _diags.get(fp, {}).get("text")
+        prior_diag = (
+            "\n- Diagnostic rendu À CHAUD pendant l'incident (à confronter "
+            "aux données de la fenêtre) :\n« " + prior + " »\n"
+        ) if prior else "\n"
         ask = PROMPT_POSTMORTEM.format(
             alertname=labels.get("alertname", "?"),
             severity=labels.get("severity", "?"),
@@ -245,6 +315,7 @@ def investigate(alert, postmortem=False):
             starts_at=alert.get("startsAt", "?"),
             ends_at=alert.get("endsAt", "?"),
             description=ann.get("description", ann.get("summary", "?")),
+            prior_diag=prior_diag,
         )
     else:
         ask = PROMPT.format(
@@ -256,6 +327,8 @@ def investigate(alert, postmortem=False):
         )
     resp = _call_holmes(ask)
     analysis = resp.get("analysis") or resp.get("response") or json.dumps(resp)
+    if not postmortem:
+        _store_diag(fp, analysis)    # servira au post-mortem de cette alerte
     icon = "📋 Post-mortem" if postmortem else "🤖 Diagnostic"
     slack_post_rich(
         title=f"{icon} — {labels.get('alertname', '?')}",
@@ -362,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     _seen = _load_seen()
+    _diags = _load_diags()
     log(f"listening :8000 -> holmes={HOLMES_URL} model={HOLMES_MODEL} "
         f"dedup={DEDUP_TTL_S}s max={MAX_PER_HOUR}/h retry={RETRY_MAX}x{RETRY_WAIT_S}s "
         f"state={DEDUP_STATE_FILE} ({len(_seen)} empreintes rechargées) "
