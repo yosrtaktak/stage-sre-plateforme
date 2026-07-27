@@ -22,7 +22,7 @@
 #  (clé gratuite sans CB : https://aistudio.google.com/apikey)
 # =============================================================================
 
-# Clé API injectée depuis le Secret (jamais en clair dans le repo).
+# Clés API injectées depuis les Secrets (jamais en clair dans le repo).
 additionalEnvVars:
   - name: GEMINI_API_KEY
     valueFrom:
@@ -33,6 +33,28 @@ additionalEnvVars:
   # vide dans les schémas d'outils et l'API Gemini rejette les tool calls.
   - name: TOOL_SCHEMA_NO_PARAM_OBJECT_IF_NO_PARAMS
     value: "true"
+  # Plan B (fallback quota) : clé Groq, à ajouter au Secret holmes-llm :
+  #   kubectl -n monitoring create secret generic holmes-llm \
+  #     --from-literal=GEMINI_API_KEY='...' --from-literal=GROQ_API_KEY='gsk_...' \
+  #     --dry-run=client -o yaml | kubectl apply -f -
+  # (optional: true -> Holmes démarre même si la clé n'est pas encore là)
+  - name: GROQ_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: holmes-llm
+        key: GROQ_API_KEY
+        optional: true
+  # Token Grafana partagé (toolsets Loki/Tempo + annotations du bridge).
+  # Création : Grafana UI -> Administration -> Service accounts -> role
+  # Editor -> Add token, puis :
+  #   kubectl -n monitoring create secret generic grafana-agent-token \
+  #     --from-literal=token='glsa_...'
+  - name: GRAFANA_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: grafana-agent-token
+        key: token
+        optional: true
 
 # Modèles disponibles pour l'API Holmes (litellm). Le bridge appelle
 # "gemini-flash" par défaut ; "groq-llama70b" est le plan B (autre free tier,
@@ -41,12 +63,31 @@ additionalEnvVars:
 modelList:
   gemini-flash:
     api_key: "{{ env.GEMINI_API_KEY }}"
+    # Alias "dernière version stable de Flash-Lite". Deux contraintes free
+    # tier constatées le 27/07/2026 : (1) gemini-2.5-flash retiré pour les
+    # nouveaux comptes (404) ; (2) le Flash plein (gemini-3.6-flash via
+    # gemini-flash-latest) est plafonné à 5 req/min — trop peu pour une
+    # enquête ReAct de 10-20 appels. Flash-Lite : ~15 req/min, ~1000 req/jour.
     model: gemini/gemini-flash-lite-latest
     temperature: 0
-  # groq-llama70b:
-  #   api_key: "{{ env.GROQ_API_KEY }}"
-  #   model: groq/llama-3.3-70b-versatile
-  #   temperature: 0
+    # Retry litellm AU NIVEAU DE L'APPEL : une enquête ReAct peut saturer à
+    # elle seule les 250 k tokens/min (l'historique est renvoyé à chaque
+    # appel) ; sans ce retry, un 429 en plein milieu perd toute l'enquête.
+    num_retries: 3
+  # Secours n°1 : les quotas free tier Gemini sont comptés PAR MODÈLE
+  # (quota "...PerModelPerMinute") — un 2e Flash-Lite d'une autre génération
+  # a donc son PROPRE compteur 250 k tokens/min + ~1000 req/jour. La chaîne
+  # de fallback du bridge : gemini-flash -> gemini-flash-31 -> groq-llama70b.
+  gemini-flash-31:
+    api_key: "{{ env.GEMINI_API_KEY }}"
+    model: gemini/gemini-3.1-flash-lite
+    temperature: 0
+    num_retries: 3
+  # Secours n°2 (dernier recours) : Groq — 100 k tokens/JOUR ≈ 1-2 enquêtes.
+  groq-llama70b:
+    api_key: "{{ env.GROQ_API_KEY }}"
+    model: groq/llama-3.3-70b-versatile
+    temperature: 0
 
 # Modèle par défaut (clé de modelList) pour les appels sans champ "model".
 config:
@@ -63,19 +104,33 @@ toolsets:
     enabled: true
     subtype: prometheus
     config:
-      # Service du chart umbrella (fullnameOverride: prometheus-server, port 80)
+      # Service réel de la release "obs" du chart umbrella (même endpoint que
+      # les datasources Grafana de yosr.yaml). Vérifiable avec :
+      #   kubectl -n monitoring get svc | grep prometheus-server
       prometheus_url: http://obs-prometheus-server.monitoring.svc.cluster.local:80
       discover_metrics_from_last_hours: 1
       query_timeout_seconds_default: 20
       tool_calls_return_data: true
-  # Optionnel (nécessite une clé API Grafana) : logs Loki via Grafana.
-  # kubernetes/logs suffit pour les logs récents des pods vivants ;
-  # grafana/loki ajoute l'historique des pods morts.
-  # grafana/loki:
-  #   enabled: true
-  #   config:
-  #     url: http://grafana.monitoring.svc.cluster.local:80
-  #     api_key: "{{ env.GRAFANA_API_KEY }}"
+  # Amélioration B : historique des logs via Loki (à travers Grafana).
+  # kubernetes/logs ne lit que les pods VIVANTS ; ce toolset donne accès aux
+  # logs de la fenêtre d'un incident même si les pods ont été recréés depuis
+  # — indispensable pour des post-mortems profonds. Les UID de datasources
+  # (loki / tempo) sont ceux définis dans yosr.yaml (grafana.datasources).
+  grafana/loki:
+    enabled: true
+    config:
+      api_url: http://grafana.monitoring.svc.cluster.local:80
+      api_key: "{{ env.GRAFANA_API_KEY }}"
+      grafana_datasource_uid: loki
+  # Amélioration C : traces distribuées via Tempo — permet à l'agent de
+  # décomposer une latence par service (qui prend les millisecondes ?) au
+  # lieu de l'attribuer par déduction.
+  grafana/tempo:
+    enabled: true
+    config:
+      api_url: http://grafana.monitoring.svc.cluster.local:80
+      api_key: "{{ env.GRAFANA_API_KEY }}"
+      grafana_datasource_uid: tempo
 
 # Sobriété : le nœud est partagé avec toute la stack d'observabilité.
 resources:
@@ -85,3 +140,4 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
+

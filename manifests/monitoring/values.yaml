@@ -789,15 +789,26 @@ tempo:
 # =============================================================================
 grafana:
   fullnameOverride: grafana
+  # Persistance ACTIVÉE le 27/07/2026 : sans elle, chaque restart du pod
+  # effaçait la base SQLite — donc les service accounts (token de l'agent),
+  # les annotations posées par l'agent, et tout import manuel. PVC local-path
+  # (mono-node K3s) + stratégie Recreate (un volume RWO ne peut pas être
+  # monté par deux pods pendant un RollingUpdate).
   persistence:
-    enabled: false
+    enabled: true
+    size: 2Gi
+  deploymentStrategy:
+    type: Recreate
+  # Limites relevées le 27/07/2026 : à 200m CPU / 256Mi, Grafana répondait
+  # par intermittence en > timeout sur /api/health (probes Unhealthy, 502
+  # sur le proxy datasources sous charge de l'agent SRE).
   resources:
     requests:
-      memory: 128Mi
-      cpu: 50m
+      memory: 192Mi
+      cpu: 100m
     limits:
-      memory: 256Mi
-      cpu: 200m
+      memory: 512Mi
+      cpu: 500m
   service:
     type: NodePort
     nodePort: 32000

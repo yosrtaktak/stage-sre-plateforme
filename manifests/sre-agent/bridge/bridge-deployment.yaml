@@ -60,6 +60,23 @@ spec:
               value: "75"
             - name: DEDUP_STATE_FILE     # persistance de la dédup (emptyDir)
               value: "/state/seen.json"
+            # Amélioration D : annotations Grafana à chaque verdict. Token
+            # partagé avec les toolsets Loki/Tempo de Holmes — Secret
+            # grafana-agent-token (optionnel : sans lui, la feature se
+            # désactive toute seule, le bridge démarre quand même) :
+            #   kubectl -n monitoring create secret generic grafana-agent-token \
+            #     --from-literal=token='glsa_...'
+            - name: GRAFANA_URL
+              value: "http://grafana.monitoring.svc.cluster.local:80"
+            - name: GRAFANA_TOKEN_FILE
+              value: "/etc/grafana/token"
+            # Amélioration E : modèles de secours (CSV, essayés dans l'ordre)
+            # quand le quota est épuisé après les retries. Les quotas Gemini
+            # free tier sont PAR MODÈLE : gemini-flash-31 (3.1-flash-lite) a
+            # son propre compteur 250k tokens/min — Groq reste le dernier
+            # recours (100k tokens/jour). Laisser vide pour désactiver.
+            - name: FALLBACK_MODEL
+              value: "gemini-flash-31,groq-llama70b"
           ports:
             - containerPort: 8000
           volumeMounts:
@@ -71,6 +88,9 @@ spec:
               readOnly: true
             - name: state              # survit aux restarts du conteneur
               mountPath: /state
+            - name: grafana            # token annotations (Secret optionnel)
+              mountPath: /etc/grafana
+              readOnly: true
           readinessProbe:
             httpGet: { path: /healthz, port: 8000 }
             initialDelaySeconds: 3
@@ -92,6 +112,11 @@ spec:
         - name: state
           emptyDir: {}   # dédup persistante : survit aux restarts du
                          # conteneur (pas à la suppression du pod — assumé)
+        - name: grafana
+          secret:
+            secretName: grafana-agent-token
+            optional: true   # sans le Secret, le montage est vide et la
+                             # feature annotations reste simplement off
 ---
 apiVersion: v1
 kind: Service

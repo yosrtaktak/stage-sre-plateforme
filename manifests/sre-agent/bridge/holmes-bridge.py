@@ -55,6 +55,19 @@ POSTMORTEM_SEVERITIES = set(
     s.strip() for s in
     os.environ.get("POSTMORTEM_SEVERITIES", "critical").split(",") if s.strip())
 POSTMORTEM_MIN_S = int(os.environ.get("POSTMORTEM_MIN_S", "300"))
+# Amélioration D : annotation Grafana à chaque verdict (marqueur sur les
+# dashboards). Auto-désactivée si le fichier token n'existe pas.
+GRAFANA_URL = os.environ.get(
+    "GRAFANA_URL", "http://grafana.monitoring.svc.cluster.local:80")
+GRAFANA_TOKEN_FILE = os.environ.get(
+    "GRAFANA_TOKEN_FILE", "/etc/grafana/annotator-token")
+# Amélioration E : modèles de secours (CSV, essayés dans l'ordre) quand le
+# quota du modèle courant est épuisé après RETRY_MAX tentatives. Chaque
+# modèle doit exister dans le modelList de holmes-values.yaml. Les quotas
+# free tier Gemini étant comptés PAR MODÈLE, un 2e Flash-Lite d'une autre
+# génération double la capacité/minute avant de tomber sur Groq.
+FALLBACK_MODELS = [m.strip() for m in
+                   os.environ.get("FALLBACK_MODEL", "").split(",") if m.strip()]
 
 _seen = {}           # fingerprint -> timestamp (persisté dans DEDUP_STATE_FILE)
 _hour_window = []    # timestamps des investigations lancées
@@ -69,6 +82,32 @@ DIAG_TTL_S = int(os.environ.get("DIAG_TTL_S", "86400"))   # 24 h
 _diags = {}          # fingerprint -> {"t": ts, "text": diagnostic}
 
 SEV_COLORS = {"critical": "#D40E0D", "warning": "#F2A100"}
+
+# Amélioration A : connaissance permanente de la plateforme, injectée en tête
+# de chaque prompt. L'agent n'a plus à redécouvrir la topologie à chaque
+# enquête, et il connaît les modes de panne DÉJÀ observés sur CE cluster.
+PLATFORM_CONTEXT = """CONTEXTE PLATEFORME (connaissance permanente — utilise-la
+pour orienter l'enquête, mais vérifie toujours par la mesure) :
+- Topologie (namespace online-boutique, mesh Istio AMBIENT, SLI mesurés par le
+  waypoint via istio_requests_total) : loadgenerator -> frontend (2 replicas)
+  -> productcatalog / cart / currency / recommendation / ad ;
+  checkout -> payment + shipping + email + currency + cart ;
+  cartservice -> redis-cart (Redis, dépendance non instrumentée directement).
+- SLO : checkout_success 99,95 % | frontend_availability 99,9 % |
+  productcatalog & cart 99 % | user_journey 99,5 % (produit des 4 maillons).
+  Recording rules Prometheus : sli:* et slo:* (burnrates multi-fenêtres).
+- MODES DE PANNE DÉJÀ OBSERVÉS sur ce cluster :
+  1) Après un reboot du nœud K3s, les pods créés AVANT le reboot peuvent
+     garder un enrôlement mesh ambient cassé. Signature : gRPC 14 UNAVAILABLE
+     vers le service, "upstream connect error" ou "SocketClosed" côté client,
+     alors que le pod cible est Running/Ready. Remède prouvé : rollout
+     restart du deployment CIBLE (vécu le 27/07/2026 : redis-cart, puis
+     paymentservice).
+  2) Pannes "pod vert" : pod 1/1 Running mais service indisponible — toujours
+     confronter le SLI mesuré à l'état des pods.
+  3) Le loadgenerator est la seule source de trafic : s'il est HS, les SLI
+     deviennent VIDES (absence de données ≠ panne à 100 %).
+"""
 
 PROMPT = """Tu es l'agent SRE de la plateforme Online Boutique (K3s mono-node,
 namespace online-boutique, mesh Istio ambient, SLI/SLO mesurés par le waypoint).
@@ -200,6 +239,25 @@ def _alert_fp(alert):
             or (labels.get("alertname", "") + alert.get("startsAt", "")))
 
 
+def _recent_incidents(exclude_fp=None, n=3):
+    # Amélioration A (mémoire) : les verdicts des derniers diagnostics (24 h)
+    # sont injectés dans le prompt — l'agent peut reconnaître une récidive.
+    with _lock:
+        items = sorted(
+            ((fp, v) for fp, v in _diags.items() if fp != exclude_fp),
+            key=lambda kv: kv[1].get("t", 0), reverse=True)[:n]
+    if not items:
+        return ""
+    lines = []
+    for _, v in items:
+        when = datetime.fromtimestamp(v.get("t", 0), timezone.utc)
+        first = (v.get("text") or "").strip().split("\n")[0][:220]
+        lines.append(f"  - [{when.strftime('%d/%m %H:%M')} UTC] {first}")
+    return ("\nINCIDENTS RÉCENTS déjà diagnostiqués sur ce cluster (mémoire de "
+            "l'agent — si la panne actuelle ressemble à l'un d'eux, dis-le et "
+            "vérifie si c'est une récidive) :\n" + "\n".join(lines) + "\n")
+
+
 # --------------------------------------------------------------------------
 #  Slack (amélioration 2 : Block Kit)
 # --------------------------------------------------------------------------
@@ -218,6 +276,31 @@ def _slack_send(payload):
 def slack_post(text):
     """Message simple (erreurs, avertissements)."""
     _slack_send({"text": text[:3900]})
+
+
+def grafana_annotate(text, tags):
+    """Amélioration D : pose le verdict en annotation sur les dashboards
+    Grafana (marqueur temporel visible sur les graphes SLI, aux côtés des
+    annotations de chaos). No-op silencieux si le token n'est pas monté."""
+    try:
+        with open(GRAFANA_TOKEN_FILE) as f:
+            token = f.read().strip()
+    except Exception:
+        return                       # feature désactivée : pas de token
+    try:
+        body = json.dumps({
+            "time": int(time.time() * 1000),
+            "tags": ["sre-agent"] + tags,
+            "text": text[:600],
+        }).encode()
+        req = urllib.request.Request(
+            f"{GRAFANA_URL}/api/annotations", data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}"})
+        urllib.request.urlopen(req, timeout=10)
+        log("grafana annotation posted")
+    except Exception as e:
+        log(f"grafana annotation error: {e}")
 
 
 def _to_mrkdwn(text):
@@ -269,33 +352,46 @@ def slack_post_rich(title, severity, slo, analysis, runbook_url=None):
 
 
 # --------------------------------------------------------------------------
-#  Appel Holmes avec retry quota (amélioration 1)
+#  Appel Holmes : retry quota (v2) + fallback de modèle (amélioration E)
 # --------------------------------------------------------------------------
+def _is_quota_error(code, body):
+    # Holmes propage le 429 Gemini tel quel, ou parfois en 500
+    # contenant RateLimitError : les deux sont transitoires.
+    return code == 429 or (code == 500 and ("RateLimit" in body or "429" in body))
+
+
 def _call_holmes(ask):
-    payload = json.dumps({"ask": ask, "model": HOLMES_MODEL}).encode()
-    for attempt in range(1, RETRY_MAX + 1):
-        try:
-            req = urllib.request.Request(
-                f"{HOLMES_URL}/api/chat", data=payload,
-                headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=HOLMES_TIMEOUT_S) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            body = ""
+    models = [HOLMES_MODEL] + FALLBACK_MODELS
+    last_exc = None
+    for model in models:
+        payload = json.dumps({"ask": ask, "model": model}).encode()
+        for attempt in range(1, RETRY_MAX + 1):
             try:
-                body = e.read().decode(errors="replace")[:300]
-            except Exception:
-                pass
-            # Holmes propage le 429 Gemini tel quel, ou parfois en 500
-            # contenant RateLimitError : les deux sont transitoires.
-            quota = (e.code == 429
-                     or (e.code == 500 and ("RateLimit" in body or "429" in body)))
-            if quota and attempt < RETRY_MAX:
-                log(f"quota LLM saturé (tentative {attempt}/{RETRY_MAX}), "
-                    f"retry dans {RETRY_WAIT_S}s")
-                time.sleep(RETRY_WAIT_S)
-                continue
-            raise
+                req = urllib.request.Request(
+                    f"{HOLMES_URL}/api/chat", data=payload,
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=HOLMES_TIMEOUT_S) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode(errors="replace")[:300]
+                except Exception:
+                    pass
+                if _is_quota_error(e.code, body):
+                    if attempt < RETRY_MAX:
+                        log(f"quota LLM saturé sur {model} (tentative "
+                            f"{attempt}/{RETRY_MAX}), retry dans {RETRY_WAIT_S}s")
+                        time.sleep(RETRY_WAIT_S)
+                        continue
+                    last_exc = e
+                    idx = models.index(model)
+                    if idx < len(models) - 1:
+                        log(f"quota épuisé sur {model} -> bascule sur le "
+                            f"modèle de secours {models[idx + 1]}")
+                    break        # modèle suivant (ou abandon si dernier)
+                raise            # erreur non-quota : inutile d'insister
+    raise last_exc
 
 
 def investigate(alert, postmortem=False):
@@ -325,6 +421,9 @@ def investigate(alert, postmortem=False):
             description=ann.get("description", ann.get("summary", "?")),
             labels=json.dumps(labels, ensure_ascii=False),
         )
+    # Amélioration A : contexte plateforme + mémoire des incidents récents
+    # injectés en tête de chaque enquête (diagnostic ET post-mortem).
+    ask = PLATFORM_CONTEXT + _recent_incidents(exclude_fp=fp) + "\n" + ask
     resp = _call_holmes(ask)
     analysis = resp.get("analysis") or resp.get("response") or json.dumps(resp)
     if not postmortem:
@@ -337,6 +436,11 @@ def investigate(alert, postmortem=False):
         analysis=analysis,
         runbook_url=ann.get("runbook_url"),
     )
+    # Amélioration D : le verdict devient un marqueur sur les dashboards.
+    verdict_line = analysis.strip().split("\n")[0]
+    grafana_annotate(
+        f"{icon} {labels.get('alertname', '?')} — {verdict_line}",
+        tags=[labels.get("alertname", "?"), labels.get("severity", "?")])
     log(f"{'postmortem' if postmortem else 'investigation'} posted "
         f"for {labels.get('alertname')}")
 
@@ -440,6 +544,9 @@ if __name__ == "__main__":
         f"dedup={DEDUP_TTL_S}s max={MAX_PER_HOUR}/h retry={RETRY_MAX}x{RETRY_WAIT_S}s "
         f"state={DEDUP_STATE_FILE} ({len(_seen)} empreintes rechargées) "
         f"postmortem={'on' if POSTMORTEM else 'off'}"
-        f"[sev={','.join(sorted(POSTMORTEM_SEVERITIES))},min={POSTMORTEM_MIN_S}s]")
+        f"[sev={','.join(sorted(POSTMORTEM_SEVERITIES))},min={POSTMORTEM_MIN_S}s] "
+        f"fallback={','.join(FALLBACK_MODELS) or 'off'} "
+        f"grafana={'on' if os.path.exists(GRAFANA_TOKEN_FILE) else 'off'} "
+        f"memoire={len(_diags)} diag(s)")
     ThreadingHTTPServer(("", 8000), Handler).serve_forever()
 
