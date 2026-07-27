@@ -46,8 +46,20 @@ spec:
             - name: MAX_PER_HOUR         # plafond global : protège le free tier
               value: "10"
             - name: POSTMORTEM_ENABLED   # rapport post-incident sur resolved
-              value: "false"             # true => aussi send_resolved: true
+              value: "true"              # exige aussi send_resolved: true
                                          # dans le receiver Alertmanager
+            # Anti-fatigue : un 📋 seulement si l'incident en vaut la peine.
+            - name: POSTMORTEM_SEVERITIES   # CSV des sévérités éligibles
+              value: "critical"
+            - name: POSTMORTEM_MIN_S        # durée minimale de l'incident
+              value: "300"
+            # Retry quand le free tier Gemini répond 429 (quota/minute).
+            - name: RETRY_MAX
+              value: "3"
+            - name: RETRY_WAIT_S
+              value: "75"
+            - name: DEDUP_STATE_FILE     # persistance de la dédup (emptyDir)
+              value: "/state/seen.json"
           ports:
             - containerPort: 8000
           volumeMounts:
@@ -57,6 +69,8 @@ spec:
             - name: slack
               mountPath: /etc/slack
               readOnly: true
+            - name: state              # survit aux restarts du conteneur
+              mountPath: /state
           readinessProbe:
             httpGet: { path: /healthz, port: 8000 }
             initialDelaySeconds: 3
@@ -75,6 +89,9 @@ spec:
         - name: slack
           secret:
             secretName: holmes-slack-webhook
+        - name: state
+          emptyDir: {}   # dédup persistante : survit aux restarts du
+                         # conteneur (pas à la suppression du pod — assumé)
 ---
 apiVersion: v1
 kind: Service
@@ -89,3 +106,4 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
+
