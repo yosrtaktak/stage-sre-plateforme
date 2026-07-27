@@ -1,0 +1,10 @@
+# mTLS STRICT pour tout le namespace : chaque appel intra-mesh doit être
+# authentifié mutuellement (ztunnel en mode ambient).
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: online-boutique
+spec:
+  mtls:
+    mode: STRICT

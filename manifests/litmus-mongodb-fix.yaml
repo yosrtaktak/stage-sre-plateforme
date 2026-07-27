@@ -1,0 +1,12 @@
+mongodb:
+  architecture: replicaset
+  replicaCount: 1
+  arbiter:
+    enabled: false
+  auth:
+    enabled: true
+    rootUser: "root"
+    rootPassword: "1234"
+    replicaSetKey: "a64bNkYkHi3m7sGJ3oYFINsSjxIcMZKhprCvWlNEnjs="
+  persistence:
+    enabled: true

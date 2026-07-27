@@ -1,0 +1,32 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"CheckoutFastBurn\"}",
+  "status": "resolved",
+  "receiver": "holmes-bridge",
+  "groupLabels": { "alertname": "CheckoutFastBurn" },
+  "commonLabels": {
+    "alertname": "CheckoutFastBurn",
+    "severity": "critical",
+    "slo": "checkout-availability"
+  },
+  "externalURL": "http://alertmanager.monitoring.svc:9093",
+  "alerts": [
+    {
+      "status": "resolved",
+      "labels": {
+        "alertname": "CheckoutFastBurn",
+        "severity": "critical",
+        "slo": "checkout-availability",
+        "namespace": "online-boutique",
+        "service": "checkoutservice"
+      },
+      "annotations": {
+        "summary": "Burn rate rapide sur le SLO checkout",
+        "description": "TEST MANUEL (fausse alerte resolue) : incident checkout termine, fenetre 10h00-10h12 UTC."
+      },
+      "startsAt": "2026-07-24T10:00:00.000Z",
+      "endsAt": "2026-07-24T10:12:00.000Z",
+      "fingerprint": "test-manuel-0001"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+# =============================================================================
+#  EXP 3 — Network Loss 100 % : paymentservice (replicas=1)
+#  Alertes attendues : CheckoutFastBurn (CRITICAL, ~3-4 min) — paymentservice
+#  fait partie du SLI checkout_success (checkout|payment|shipping). Les appels
+#  gRPC checkout -> payment échouent (503/504 côté mesh) => 5xx => burn rate.
+#  Différence avec pod-delete : le pod reste Running/Ready — Kubernetes ne
+#  répare RIEN. Seule l'alerte détecte le problème. C'est le test le plus
+#  probant pour valider la chaîne d'alerting.
+#
+#  ⚠️ K3s : SOCKET_PATH containerd spécifique K3s obligatoire, sinon le helper
+#  ne trouve pas le conteneur cible.
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: payment-network-loss
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=paymentservice
+    appkind: deployment
+  experiments:
+    - name: pod-network-loss
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "300"
+            - name: NETWORK_PACKET_LOSS_PERCENTAGE
+              value: "100"
+            - name: TARGET_CONTAINER
+              value: "server"
+            - name: PODS_AFFECTED_PERC
+              value: "100"
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/k3s/containerd/containerd.sock"   # chemin K3s (≠ /run/containerd)

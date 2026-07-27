@@ -1,0 +1,34 @@
+groups:
+  - name: user_facing_slo_alerts
+    rules:
+      - alert: CheckoutFastBurn
+        expr: slo:checkout_success:burnrate5m > 14.4 and slo:checkout_success:burnrate1h > 14.4
+        for: 2m
+        labels: {severity: critical, slo: checkout_success}
+        annotations:
+          summary: Checkout Success Rate en burn rapide
+          description: Taux de succès checkout/payment/shipping sous le seuil critique depuis plus de 2 minutes.
+
+      - alert: CheckoutSlowBurn
+        expr: slo:checkout_success:burnrate30m > 6 and slo:checkout_success:burnrate6h > 6
+        for: 15m
+        labels: {severity: warning, slo: checkout_success}
+        annotations:
+          summary: Checkout Success Rate en dégradation lente
+          description: Dégradation progressive détectée sur 30m et 6h.
+
+      - alert: FrontendFastBurn
+        expr: slo:frontend_availability:burnrate5m > 14.4 and slo:frontend_availability:burnrate1h > 14.4
+        for: 2m
+        labels: {severity: critical, slo: frontend_availability}
+        annotations:
+          summary: Frontend Availability en burn rapide
+          description: Disponibilité frontend sous le seuil critique confirmé sur 5m et 1h.
+
+      - alert: FrontendSlowBurn
+        expr: slo:frontend_availability:burnrate30m > 6 and slo:frontend_availability:burnrate6h > 6
+        for: 15m
+        labels: {severity: warning, slo: frontend_availability}
+        annotations:
+          summary: Frontend Availability en dégradation lente
+          description: Dégradation progressive détectée sur 30m et 6h.

@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-grafana-annotator
+  namespace: litmus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chaos-grafana-annotator
+rules:
+  - apiGroups: ["litmuschaos.io"]
+    resources: ["chaosengines", "chaosresults"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: chaos-grafana-annotator
+subjects:
+  - kind: ServiceAccount
+    name: chaos-grafana-annotator
+    namespace: litmus
+roleRef:
+  kind: ClusterRole
+  name: chaos-grafana-annotator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chaos-grafana-annotator-creds
+  namespace: litmus
+type: Opaque
+stringData:
+  # Ajuste avec un compte Grafana dédié (idéalement un Service Account Token Grafana
+  # avec le scope "annotations:write" plutôt que le compte admin).
+  GRAFANA_USER: "admin"
+  GRAFANA_PASS: "admin123"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-grafana-annotator-script
+  namespace: litmus
+data:
+  watch.sh: |
+    #!/bin/sh
+    set -eu
+
+    # Ajuste le host/port/namespace exacts du service Grafana si différents.
+    GRAFANA_HOST="${GRAFANA_HOST:-grafana.monitoring.svc.cluster.local}"
+    GRAFANA_PORT="${GRAFANA_PORT:-80}"
+    GRAFANA_URL="http://${GRAFANA_USER}:${GRAFANA_PASS}@${GRAFANA_HOST}:${GRAFANA_PORT}/api/annotations"
+
+    STATE_DIR=/tmp/chaos-annotator-state
+    mkdir -p "$STATE_DIR"
+
+    annotate() {
+      status="$1"
+      desc="$2"
+      curl -s -m 5 -X POST "$GRAFANA_URL" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"${status}: ${desc}\",\"tags\":[\"chaos\"],\"time\":$(date +%s000)}" \
+        > /dev/null || echo "$(date -u +%FT%TZ) WARN: annotation POST failed"
+      echo "$(date -u +%FT%TZ) annotated: ${status} ${desc}"
+    }
+
+    echo "$(date -u +%FT%TZ) chaos-grafana-annotator started, watching every 10s"
+
+    while true; do
+      # --- START : nouveaux ChaosEngine actifs ---
+      kubectl get chaosengine -A \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.engineState}{"\n"}{end}' \
+        2>/dev/null | while IFS='|' read -r ns name state; do
+          [ -z "$ns" ] && continue
+          key="${STATE_DIR}/${ns}_${name}_start"
+          if [ "$state" = "active" ] && [ ! -f "$key" ]; then
+            annotate "STARTED" "${name} (ns=${ns})"
+            touch "$key"
+          fi
+        done
+
+      # --- END : ChaosResult arrivés en phase terminale ---
+      kubectl get chaosresult -A \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.experimentStatus.phase}{"|"}{.status.experimentStatus.verdict}{"\n"}{end}' \
+        2>/dev/null | while IFS='|' read -r ns name phase verdict; do
+          [ -z "$ns" ] && continue
+          key="${STATE_DIR}/${ns}_${name}_end"
+          if { [ "$phase" = "Completed" ] || [ "$phase" = "Stopped" ]; } && [ ! -f "$key" ]; then
+            annotate "ENDED (${verdict:-unknown})" "${name} (ns=${ns})"
+            touch "$key"
+          fi
+        done
+
+      sleep 10
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-grafana-annotator
+  namespace: litmus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-grafana-annotator
+  template:
+    metadata:
+      labels:
+        app: chaos-grafana-annotator
+    spec:
+      serviceAccountName: chaos-grafana-annotator
+      containers:
+        - name: annotator
+          image: rancher/kubectl:v1.29.3
+          command: ["/bin/sh", "-c"]
+          args:
+            - apk add --no-cache curl >/dev/null 2>&1; sh /scripts/watch.sh
+          envFrom:
+            - secretRef:
+                name: chaos-grafana-annotator-creds
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: script
+          configMap:
+            name: chaos-grafana-annotator-script
+            defaultMode: 0755

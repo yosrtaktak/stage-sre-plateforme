@@ -1,0 +1,47 @@
+apiVersion: v2
+name: observability-stack
+description: >-
+  Umbrella chart d'observabilité pour Online Boutique :
+  Prometheus (métriques) + Loki (logs) + Tempo (traces) + Grafana (UI) +
+  Kiali (mesh) + 2 collectors OpenTelemetry (gateway OTLP + agent DaemonSet logs).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+# Les contraintes de version sont volontairement des plages majeures :
+# `helm dependency update` récupère la dernière version compatible de chaque
+# chart. Pour figer, remplace par la version exacte affichée par
+# `helm search repo <repo>/<chart>`.
+dependencies:
+  - name: prometheus
+    version: ">=25.0.0 <28.0.0"
+    repository: https://prometheus-community.github.io/helm-charts
+
+  - name: loki
+    version: ">=6.0.0 <7.0.0"
+    repository: https://grafana.github.io/helm-charts
+
+  - name: tempo
+    version: ">=1.7.0 <2.0.0"
+    repository: https://grafana.github.io/helm-charts
+
+  - name: grafana
+    version: ">=8.0.0 <10.0.0"
+    repository: https://grafana.github.io/helm-charts
+
+  # Deux releases du même chart via alias : un gateway (Deployment) et un
+  # agent (DaemonSet). Chaque alias reçoit sa propre section de values.
+  - name: opentelemetry-collector
+    alias: otelGateway
+    version: ">=0.100.0 <0.130.0"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+
+  - name: opentelemetry-collector
+    alias: otelAgent
+    version: ">=0.100.0 <0.130.0"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+
+  - name: kiali-server
+    alias: kiali
+    version: ">=1.80.0 <3.0.0"
+    repository: https://kiali.org/helm-charts

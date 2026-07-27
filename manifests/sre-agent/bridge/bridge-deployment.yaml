@@ -1,0 +1,91 @@
+# =============================================================================
+#  holmes-bridge : Alertmanager -> HolmesGPT -> Slack
+# -----------------------------------------------------------------------------
+#  Le script est monté depuis un ConfigMap (à créer depuis le repo) :
+#    kubectl -n monitoring create configmap holmes-bridge-script \
+#      --from-file=ai-agent/bridge/holmes-bridge.py \
+#      --dry-run=client -o yaml | kubectl apply -f -
+#  Les diagnostics partent sur un canal Slack DÉDIÉ à l'agent (ex. #sre-agent),
+#  séparé des 2 canaux d'alerte existants. Créer d'abord le webhook entrant
+#  (api.slack.com/apps -> votre app -> Incoming Webhooks -> Add New Webhook,
+#  choisir le nouveau canal), puis le Secret :
+#    kubectl -n monitoring create secret generic holmes-slack-webhook \
+#      --from-literal=slack-url-agent='https://hooks.slack.com/services/T…/B…/…'
+#  Déploiement : kubectl apply -f ai-agent/bridge/bridge-deployment.yaml
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: holmes-bridge
+  namespace: monitoring
+  labels:
+    app: holmes-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: holmes-bridge
+  template:
+    metadata:
+      labels:
+        app: holmes-bridge
+    spec:
+      containers:
+        - name: bridge
+          image: python:3.11-slim
+          command: ["python", "/app/holmes-bridge.py"]
+          env:
+            - name: HOLMES_URL
+              value: "http://holmesgpt-holmes.monitoring.svc.cluster.local:80"
+            - name: HOLMES_MODEL
+              value: "gemini-flash"
+            - name: SLACK_WEBHOOK_FILE          # canal dédié agent (#sre-agent)
+              value: "/etc/slack/slack-url-agent"
+            - name: DEDUP_TTL_S          # 1 investigation max par alerte / heure
+              value: "3600"
+            - name: MAX_PER_HOUR         # plafond global : protège le free tier
+              value: "10"
+            - name: POSTMORTEM_ENABLED   # rapport post-incident sur resolved
+              value: "false"             # true => aussi send_resolved: true
+                                         # dans le receiver Alertmanager
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: script
+              mountPath: /app
+              readOnly: true
+            - name: slack
+              mountPath: /etc/slack
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 96Mi }
+      volumes:
+        - name: script
+          configMap:
+            name: holmes-bridge-script
+        - name: slack
+          secret:
+            secretName: holmes-slack-webhook
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: holmes-bridge
+  namespace: monitoring
+  labels:
+    app: holmes-bridge
+spec:
+  selector:
+    app: holmes-bridge
+  ports:
+    - port: 8000
+      targetPort: 8000

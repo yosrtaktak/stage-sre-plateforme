@@ -1,0 +1,34 @@
+# =============================================================================
+#  Patch Alertmanager (à reporter dans yosr.yaml -> alertmanager.config)
+# -----------------------------------------------------------------------------
+#  Principe : on ne touche PAS au pipeline Slack existant (2 canaux,
+#  inhibitions, resolved). On ajoute UNE route en tête avec `continue: true` :
+#  chaque alerte warning/critical part AUSSI vers le bridge HolmesGPT.
+#  Les inhibitions restent efficaces : une alerte suppressed par Alertmanager
+#  n'est jamais transmise aux receivers -> Holmes n'investigue pas les doublons.
+#
+#  Appliquer : fusionner les 2 blocs ci-dessous dans yosr.yaml, puis
+#    helm upgrade <release> ./k8s/monitoring -n monitoring -f yosr.yaml
+# =============================================================================
+
+# --- 1) À AJOUTER dans alertmanager.config.route.routes, EN PREMIÈRE position
+#        APRÈS la route Watchdog (le Watchdog ne doit pas déclencher d'enquête,
+#        le bridge le filtre de toute façon) :
+route_addition:
+  - match_re:
+      severity: critical|warning
+    receiver: holmes-bridge
+    continue: true            # l'alerte poursuit vers slack-critical / default
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+
+# --- 2) À AJOUTER dans alertmanager.config.receivers :
+receiver_addition:
+  - name: holmes-bridge
+    webhook_configs:
+      - url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
+        send_resolved: false   # passer à true pour activer le rapport
+                               # post-incident (avec POSTMORTEM_ENABLED=true
+                               # côté bridge) — voir CONCEPT-AGENT-SRE.md §5b
+        max_alerts: 5          # borne la taille du payload groupé

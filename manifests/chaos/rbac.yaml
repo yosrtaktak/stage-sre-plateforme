@@ -1,0 +1,56 @@
+# =============================================================================
+#  RBAC Litmus — ServiceAccount dédié aux expériences chaos dans online-boutique
+#  Moindre privilège : Role namespacé (pas de clusterrole=admin).
+#  Appliquer : kubectl apply -f chaos/00-rbac.yaml
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-sa
+  namespace: online-boutique
+  labels:
+    app.kubernetes.io/part-of: litmus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-sa-role
+  namespace: online-boutique
+  labels:
+    app.kubernetes.io/part-of: litmus
+rules:
+  # Cycle de vie des pods cibles + helpers (exec/log nécessaires aux faults réseau/stress)
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log", "pods/eviction", "events", "configmaps", "secrets", "services"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "deletecollection", "watch"]
+  # Détection du parent (deployment/replicaset) de la cible
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  # Jobs runners lancés par le chaos-operator
+  # watch OBLIGATOIRE : sans lui le runner émet ChaosContainerWatchNotPermitted
+  # et marque l'expérience Skipped/Fail alors que l'injection a eu lieu
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "watch", "deletecollection"]
+  # CRs Litmus
+  - apiGroups: ["litmuschaos.io"]
+    resources: ["chaosengines", "chaosexperiments", "chaosresults"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-sa-binding
+  namespace: online-boutique
+  labels:
+    app.kubernetes.io/part-of: litmus
+subjects:
+  - kind: ServiceAccount
+    name: chaos-sa
+    namespace: online-boutique
+roleRef:
+  kind: Role
+  name: chaos-sa-role
+  apiGroup: rbac.authorization.k8s.io
+

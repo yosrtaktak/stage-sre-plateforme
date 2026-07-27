@@ -1,0 +1,1003 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "name": "🧪 Chaos Experiments",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [
+            "chaos"
+          ],
+          "type": "tags"
+        },
+        "type": "tags"
+      }
+    ]
+  },
+  "description": "Dashboard 4 - Logs & Traces. Volume de logs Loki (labels OTLP k8s_*), taux et ratio d'erreur, recherche live, traces Tempo (TraceQL) et correlation Metrics/Logs/Traces.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Kiali",
+      "tooltip": "Graphe du mesh en temps réel",
+      "type": "link",
+      "url": "http://10.0.2.15:32001"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Jaeger",
+      "tooltip": "Recherche de traces",
+      "type": "link",
+      "url": "http://10.0.2.15:32002"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Tempo (Explore)",
+      "tooltip": "Traces via Grafana Explore",
+      "type": "link",
+      "url": "/explore?schemaVersion=1&panes=%7B%22tmp%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22traceqlSearch%22%7D%5D%7D%7D"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Loki (Explore)",
+      "tooltip": "Logs via Grafana Explore",
+      "type": "link",
+      "url": "/explore"
+    },
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "online-boutique"
+      ],
+      "targetBlank": false,
+      "title": "Autres dashboards",
+      "type": "dashboards",
+      "url": ""
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 42,
+  "tags": [
+    "logs",
+    "loki",
+    "online-boutique",
+    "tempo",
+    "traces",
+    "v3"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": "Loki",
+          "value": "loki"
+        },
+        "label": "Loki",
+        "name": "DS_LOKI",
+        "options": [],
+        "query": "loki",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "text": "Tempo",
+          "value": "tempo"
+        },
+        "label": "Tempo",
+        "name": "DS_TEMPO",
+        "options": [],
+        "query": "tempo",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "text": "online-boutique",
+          "value": "online-boutique"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "${DS_LOKI}"
+        },
+        "includeAll": false,
+        "label": "Namespace",
+        "name": "namespace",
+        "options": [],
+        "query": "label_values(k8s_namespace_name)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "${DS_LOKI}"
+        },
+        "includeAll": true,
+        "label": "Pod",
+        "multi": true,
+        "name": "pod",
+        "options": [],
+        "query": "label_values({k8s_namespace_name=\"$namespace\"}, k8s_pod_name)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "label": "Filtre log",
+        "name": "search",
+        "options": [
+          {
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "label": "trace_id",
+        "name": "trace_id",
+        "options": [],
+        "query": "",
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Logs & Traces — Online Boutique (Loki / Tempo) [v3]",
+  "uid": "logs-traces-boutique-v3",
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1000,
+      "panels": [],
+      "title": "📊 Volume & Taux d'erreur (Loki)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 405,
+      "type": "stat",
+      "title": "Débit total de logs",
+      "description": "Lignes de log par seconde sur le namespace sélectionné.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "unit": "logs/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "sum(rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} [5m]))",
+          "legendFormat": "lignes/s"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 406,
+      "type": "stat",
+      "title": "Lignes d'erreur / s",
+      "description": "Lignes contenant error/exception/fatal/panic (insensible à la casse).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "unit": "logs/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "sum(rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} |~ \"(?i)(error|exception|fatal|panic)\" [5m]))",
+          "legendFormat": "erreurs/s"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 407,
+      "type": "stat",
+      "title": "% de lignes en erreur",
+      "description": "Part des lignes d'erreur dans le volume total (fenêtre 5m).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "unit": "percent",
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "100 * sum(rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} |~ \"(?i)(error|exception|fatal|panic)\" [5m])) / sum(rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} [5m]))",
+          "legendFormat": "% erreurs"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 408,
+      "type": "timeseries",
+      "title": "Volume par niveau détecté (detected_level)",
+      "description": "Niveaux détectés automatiquement par Loki 3 (info/warn/error/...). Si vide : vérifier discover_log_levels dans limits_config.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "logs/s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "warn"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "sum by (detected_level) (rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} [$__auto]))",
+          "legendFormat": "{{detected_level}}"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 401,
+      "type": "timeseries",
+      "title": "Volume de logs par pod (lignes/s)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "logs/s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "sum(rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} [$__auto])) by (k8s_pod_name)",
+          "legendFormat": "{{k8s_pod_name}}"
+        }
+      ],
+      "description": "Volume de logs par pod — un pod soudain muet est aussi suspect qu'un pod bavard."
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 402,
+      "type": "timeseries",
+      "title": "Taux de logs d'erreur par pod (error/exception/fatal/panic)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "logs/s",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Filtrer sur ${__field.labels.k8s_pod_name}",
+              "targetBlank": false,
+              "url": "/d/logs-traces-boutique-v3?var-namespace=$namespace&var-pod=${__field.labels.k8s_pod_name}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "legendFormat": "{{k8s_pod_name}}",
+          "expr": "sum(rate({k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} |~ \"(?i)(error|exception|fatal|panic)\" [$__auto])) by (k8s_pod_name)"
+        }
+      ],
+      "description": "Taux de lignes d'erreur par pod (error/exception/fatal/panic). Clic sur une série → filtrer ce dashboard sur le pod."
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 1001,
+      "panels": [],
+      "title": "🔍 Recherche de logs",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 403,
+      "type": "logs",
+      "title": "Erreurs recentes (live) - filtre: $search",
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "{k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} |~ \"(?i)(error|exception|fatal|panic)\" |~ \"$search\""
+        }
+      ],
+      "description": "Flux live des lignes d'erreur, filtrées par $search — la matière première du diagnostic pendant un chaos."
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "id": 409,
+      "type": "logs",
+      "title": "Tous les logs ($namespace / $pod) - filtre: $search",
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "refId": "A",
+          "expr": "{k8s_namespace_name=\"$namespace\", k8s_pod_name=~\"$pod\"} |~ \"$search\""
+        }
+      ],
+      "description": "Tous les logs bruts du scope courant — à utiliser après avoir ciblé un pod via les panels du haut."
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 1002,
+      "panels": [],
+      "title": "🧭 Traces (Tempo)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "${DS_TEMPO}"
+      },
+      "id": 410,
+      "type": "table",
+      "title": "Traces en erreur (TraceQL: status=error)",
+      "description": "Cliquer sur un Trace ID pour ouvrir la vue trace complète (waterfall) puis pivoter vers les logs du pod via 'Logs for this span'.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{status=error}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "${DS_TEMPO}"
+      },
+      "id": 411,
+      "type": "table",
+      "title": "Traces lentes (TraceQL: duration > 1s)",
+      "description": "Chemin critique : ouvrir la trace et repérer le span le plus long (checkout → payment/shipping/email).",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{duration > 1s}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "grafana",
+        "uid": "-- Grafana --"
+      },
+      "id": 404,
+      "type": "text",
+      "title": "Correlation Metrics ↔ Logs ↔ Traces",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "## 🧭 Correlation des trois signaux\n\nLes traces du mesh Istio (Zipkin) et de l'app (OTLP) passent par **otel-collector** puis sont stockées dans **Tempo** (Jaeger a été retiré de la stack).\n\n| Pivot | Comment |\n|---|---|\n| **Trace → Logs** | Ouvrir une trace ci-dessus → bouton *Logs for this span* (datasource Tempo configurée avec `tracesToLogsV2` sur `k8s.namespace.name`/`k8s.pod.name`) |\n| **Logs → Trace** | Cliquer le champ `trace_id` d'une ligne de log (nécessite le *derived field* `trace_id` sur la datasource Loki) |\n| **Metrics → Trace** | Exemplars Prometheus sur `istio_request_duration_milliseconds_bucket` (à activer côté mesh) |\n| **Graphe de dépendances temps réel** | [Ouvrir Kiali](http://10.0.2.15:32001) |\n\n> Recherche libre : Explore → Tempo → *Search* (filtres service / durée / statut) ou requête TraceQL, ex. `{resource.service.name=\"checkoutservice\" && duration > 500ms}`."
+      },
+      "description": "Mode d'emploi de la corrélation métriques ↔ logs ↔ traces (trace_id dans les logs via OTel)."
+    },
+    {
+      "id": 970,
+      "type": "row",
+      "title": "🎯 Ciblage — top erreurs & recherche par trace_id",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "panels": []
+    },
+    {
+      "id": 971,
+      "type": "table",
+      "title": "Top 10 pods par volume d'erreurs (lignes/s)",
+      "description": "Le classement qui répond en premier à « qui casse ? » pendant un incident — clic sur une ligne pour filtrer le dashboard sur ce pod.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "links": [
+            {
+              "title": "Filtrer sur ${__data.fields.k8s_pod_name}",
+              "targetBlank": false,
+              "url": "/d/logs-traces-boutique-v3?var-namespace=$namespace&var-pod=${__data.fields.k8s_pod_name}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "topk(10, sum by (k8s_pod_name) (rate({k8s_namespace_name=\"$namespace\"} |~ \"(?i)(error|exception|fatal|panic)\" [5m])))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 972,
+      "type": "logs",
+      "title": "Recherche par trace_id ($trace_id)",
+      "description": "Coller un trace_id (copié depuis Tempo/Jaeger ou depuis une ligne de log) dans la variable trace_id : toutes les lignes de TOUS les pods portant cet identifiant apparaissent — le fil complet d'une requête à travers les 11 services. Pour un clic direct log → trace, configurer les Derived Fields du datasource Loki (voir README).",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "{k8s_namespace_name=\"$namespace\"} |~ \"$trace_id\""
+        }
+      ]
+    }
+  ],
+  "id": null
+}

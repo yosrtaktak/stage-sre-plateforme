@@ -1,0 +1,71 @@
+groups:
+  - name: user_facing_sli
+    rules:
+      - record: sli:checkout_success:ratio5m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5.."}[5m]))
+          / sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice"}[5m]))
+      - record: sli:checkout_success:ratio30m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5.."}[30m]))
+          / sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice"}[30m]))
+      - record: sli:checkout_success:ratio1h
+        expr: |
+          sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5.."}[1h]))
+          / sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice"}[1h]))
+      - record: sli:checkout_success:ratio6h
+        expr: |
+          sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5.."}[6h]))
+          / sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice"}[6h]))
+      - record: sli:checkout_success:ratio30d
+        expr: |
+          sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5.."}[30d]))
+          / sum(rate(istio_requests_total{destination_workload=~"checkoutservice|paymentservice|shippingservice"}[30d]))
+
+      # --- Frontend : fenêtres 5m/30m/1h/6h ajoutées (manquaient) ---
+      - record: sli:frontend_availability:ratio5m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="frontend",response_code!~"5.."}[5m]))
+          / sum(rate(istio_requests_total{destination_workload="frontend"}[5m]))
+      - record: sli:frontend_availability:ratio30m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="frontend",response_code!~"5.."}[30m]))
+          / sum(rate(istio_requests_total{destination_workload="frontend"}[30m]))
+      - record: sli:frontend_availability:ratio1h
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="frontend",response_code!~"5.."}[1h]))
+          / sum(rate(istio_requests_total{destination_workload="frontend"}[1h]))
+      - record: sli:frontend_availability:ratio6h
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="frontend",response_code!~"5.."}[6h]))
+          / sum(rate(istio_requests_total{destination_workload="frontend"}[6h]))
+      - record: sli:frontend_availability:ratio30d
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="frontend",response_code!~"5.."}[30d]))
+          / sum(rate(istio_requests_total{destination_workload="frontend"}[30d]))
+
+      - record: sli:productcatalog_availability:ratio5m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="productcatalogservice",response_code!~"5.."}[5m]))
+          / sum(rate(istio_requests_total{destination_workload="productcatalogservice"}[5m]))
+      - record: sli:productcatalog_availability:ratio30m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="productcatalogservice",response_code!~"5.."}[30m]))
+          / sum(rate(istio_requests_total{destination_workload="productcatalogservice"}[30m]))
+      - record: sli:productcatalog_availability:ratio1h
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="productcatalogservice",response_code!~"5.."}[1h]))
+          / sum(rate(istio_requests_total{destination_workload="productcatalogservice"}[1h]))
+
+      - record: sli:cart_availability:ratio5m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="cartservice",response_code!~"5.."}[5m]))
+          / sum(rate(istio_requests_total{destination_workload="cartservice"}[5m]))
+      - record: sli:cart_availability:ratio30m
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="cartservice",response_code!~"5.."}[30m]))
+          / sum(rate(istio_requests_total{destination_workload="cartservice"}[30m]))
+      - record: sli:cart_availability:ratio1h
+        expr: |
+          sum(rate(istio_requests_total{destination_workload="cartservice",response_code!~"5.."}[1h]))
+          / sum(rate(istio_requests_total{destination_workload="cartservice"}[1h]))

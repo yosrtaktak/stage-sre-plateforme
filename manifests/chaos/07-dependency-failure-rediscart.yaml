@@ -1,0 +1,54 @@
+# =============================================================================
+#  EXP 7 — Service Dependency Failure : redis-cart (replicas=1)
+#  Catégorie : panne de DÉPENDANCE, pas du service lui-même.
+#
+#  Principe : cartservice est un service SAIN — ce n'est pas lui qu'on attaque.
+#  On coupe sa dépendance (redis-cart) et on observe la PROPAGATION de la
+#  panne en cascade : cartservice -> (ajout panier échoue) -> checkout
+#  (le panier est vide/inaccessible) -> impact visible sur le SLI checkout
+#  ET sur CartDegraded, sans jamais toucher directement à cartservice.
+#
+#  Alertes attendues :
+#    - CartDegraded (warning, ~5min) — sli:cart_availability:ratio5m < 0.99
+#    - Possible CheckoutFastBurn en cascade si le checkout dépend du panier
+#      (dépend de l'implémentation Online Boutique : à vérifier empiriquement)
+#
+#  Ce que ça prouve : la résilience (ou l'absence de résilience) de
+#  cartservice face à l'indisponibilité de sa base de données. Un vrai
+#  service résilient ferait du circuit-breaking / fallback ; Online Boutique
+#  (démo Google) ne l'implémente probablement PAS -> bon exemple pédagogique
+#  d'anti-pattern à documenter dans le rapport.
+#
+#  ⚠️ redis-cart utilise le protocole RESP (TCP), pas HTTP/gRPC — vérifier
+#  au préalable que istio_tcp_* (pas istio_requests_total) est la bonne
+#  métrique pour construire le SLI dédié (voir note values.yaml).
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: redis-cart-dependency-failure
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=redis-cart
+    appkind: deployment
+  experiments:
+    - name: pod-network-loss
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "300"          # 5 min : laisse le temps au `for: 5m` de CartDegraded
+            - name: NETWORK_PACKET_LOSS_PERCENTAGE
+              value: "100"
+            - name: TARGET_CONTAINER
+              value: "redis-cart"   # vérifier le nom exact du conteneur : kubectl get pod -l app=redis-cart -o jsonpath='{.items[0].spec.containers[*].name}'
+            - name: PODS_AFFECTED_PERC
+              value: "100"
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/k3s/containerd/containerd.sock"

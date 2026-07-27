@@ -1,0 +1,40 @@
+# =============================================================================
+#  EXP 6 — Memory Hog : recommendationservice (limit memory: 256Mi)
+#  Alertes attendues : PodRestartingFrequently (warning, quasi immédiate).
+#  MEMORY_CONSUMPTION=500Mi > limit 256Mi -> le kernel OOMKill le conteneur ->
+#  restart (le compteur kube_pod_container_status_restarts_total s'incrémente,
+#  contrairement au pod-delete qui crée un POD NEUF avec compteur à zéro !).
+#  C'est LA bonne expérience pour tester l'alerte PodRestartingFrequently et
+#  le panel "Redémarrages conteneurs" du dashboard.
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: recommendation-memory-hog
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=recommendationservice
+    appkind: deployment
+  experiments:
+    - name: pod-memory-hog
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "240"
+            - name: MEMORY_CONSUMPTION
+              value: "500"          # MiB — dépasse volontairement la limit 256Mi -> OOMKill
+            - name: NUMBER_OF_WORKERS
+              value: "1"
+            - name: TARGET_CONTAINER
+              value: "server"
+            - name: PODS_AFFECTED_PERC
+              value: "100"
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/k3s/containerd/containerd.sock"

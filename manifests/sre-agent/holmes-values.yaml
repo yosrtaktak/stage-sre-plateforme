@@ -1,0 +1,87 @@
+# =============================================================================
+#  HolmesGPT — Agent SRE de diagnostic (CNCF Sandbox, Apache 2.0)
+# -----------------------------------------------------------------------------
+#  Rôle dans la plateforme : l'IA ne DÉTECTE pas (la détection reste
+#  déterministe : SLO / burn rates Prometheus, prouvés par la campagne chaos).
+#  L'agent est déclenché PAR une alerte et mène l'enquête : requêtes PromQL
+#  sur les recording rules sli:/slo:, kubectl, logs — puis rend un diagnostic.
+#
+#  Backend LLM : API Gemini 2.5 Flash (free tier ~1 500 req/jour, sans carte
+#  bancaire, tool calling excellent) — choix issu du comparatif backends :
+#  Groq est bloqué par son plafond 100 k tokens/jour (≈ 1-2 enquêtes ReAct).
+#  ~300 Mo de RAM pour le pod Holmes ; ZÉRO inférence sur le nœud K3s
+#  (leçon de l'incident du 14/07 : le mono-node ne supporte pas Ollama).
+#
+#  Installation :
+#    helm repo add robusta https://robusta-charts.storage.googleapis.com
+#    helm repo update
+#    helm install holmesgpt robusta/holmes -n monitoring -f ai-agent/holmes-values.yaml
+#
+#  Prérequis : kubectl -n monitoring create secret generic holmes-llm \
+#                --from-literal=GEMINI_API_KEY=AIzaSyxxx
+#  (clé gratuite sans CB : https://aistudio.google.com/apikey)
+# =============================================================================
+
+# Clé API injectée depuis le Secret (jamais en clair dans le repo).
+additionalEnvVars:
+  - name: GEMINI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: holmes-llm
+        key: GEMINI_API_KEY
+  # Requis pour Gemini : sans ce flag, litellm envoie un bloc "parameters"
+  # vide dans les schémas d'outils et l'API Gemini rejette les tool calls.
+  - name: TOOL_SCHEMA_NO_PARAM_OBJECT_IF_NO_PARAMS
+    value: "true"
+
+# Modèles disponibles pour l'API Holmes (litellm). Le bridge appelle
+# "gemini-flash" par défaut ; "groq-llama70b" est le plan B (autre free tier,
+# nécessite GROQ_API_KEY dans le même Secret + décommenter l'env var —
+# attention : plafond 100 k tokens/jour ≈ 1-2 enquêtes, dépannage uniquement).
+modelList:
+  gemini-flash:
+    api_key: "{{ env.GEMINI_API_KEY }}"
+    model: gemini/gemini-flash-lite-latest
+    temperature: 0
+  # groq-llama70b:
+  #   api_key: "{{ env.GROQ_API_KEY }}"
+  #   model: groq/llama-3.3-70b-versatile
+  #   temperature: 0
+
+# Modèle par défaut (clé de modelList) pour les appels sans champ "model".
+config:
+  model: gemini-flash
+
+# Toolsets = les "mains" de l'agent. On ne donne QUE ce dont l'enquête a
+# besoin : lecture cluster, logs kubectl, PromQL. Pas d'accès en écriture.
+toolsets:
+  kubernetes/core:
+    enabled: true
+  kubernetes/logs:
+    enabled: true
+  prometheus/metrics:
+    enabled: true
+    subtype: prometheus
+    config:
+      # Service du chart umbrella (fullnameOverride: prometheus-server, port 80)
+      prometheus_url: http://obs-prometheus-server.monitoring.svc.cluster.local:80
+      discover_metrics_from_last_hours: 1
+      query_timeout_seconds_default: 20
+      tool_calls_return_data: true
+  # Optionnel (nécessite une clé API Grafana) : logs Loki via Grafana.
+  # kubernetes/logs suffit pour les logs récents des pods vivants ;
+  # grafana/loki ajoute l'historique des pods morts.
+  # grafana/loki:
+  #   enabled: true
+  #   config:
+  #     url: http://grafana.monitoring.svc.cluster.local:80
+  #     api_key: "{{ env.GRAFANA_API_KEY }}"
+
+# Sobriété : le nœud est partagé avec toute la stack d'observabilité.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

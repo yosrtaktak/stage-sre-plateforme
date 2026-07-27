@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: PLACEHOLDER
+  labels:
+    app.kubernetes.io/part-of: online-boutique
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: online-boutique

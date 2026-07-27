@@ -1,0 +1,26 @@
+groups:
+  - name: user_facing_slo
+    rules:
+      - record: slo:checkout_success:burnrate5m
+        expr: (1 - sli:checkout_success:ratio5m) / 0.0005
+      - record: slo:checkout_success:burnrate30m
+        expr: (1 - sli:checkout_success:ratio30m) / 0.0005
+      - record: slo:checkout_success:burnrate1h
+        expr: (1 - sli:checkout_success:ratio1h) / 0.0005
+      - record: slo:checkout_success:burnrate6h
+        expr: (1 - sli:checkout_success:ratio6h) / 0.0005
+
+      # Bug corrigé : ratio5m (au lieu de ratio30d) + 3 fenêtres ajoutées
+      - record: slo:frontend_availability:burnrate5m
+        expr: (1 - sli:frontend_availability:ratio5m) / 0.001
+      - record: slo:frontend_availability:burnrate30m
+        expr: (1 - sli:frontend_availability:ratio30m) / 0.001
+      - record: slo:frontend_availability:burnrate1h
+        expr: (1 - sli:frontend_availability:ratio1h) / 0.001
+      - record: slo:frontend_availability:burnrate6h
+        expr: (1 - sli:frontend_availability:ratio6h) / 0.001
+
+      - record: slo:checkout_success:error_budget_remaining_ratio
+        expr: 100 * (1 - ((1 - sli:checkout_success:ratio30d) / 0.0005))
+      - record: slo:frontend_availability:error_budget_remaining_ratio
+        expr: 100 * (1 - ((1 - sli:frontend_availability:ratio30d) / 0.001))

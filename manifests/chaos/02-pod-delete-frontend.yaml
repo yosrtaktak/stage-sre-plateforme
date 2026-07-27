@@ -1,0 +1,36 @@
+# =============================================================================
+#  EXP 2 — Pod Delete : frontend (replicas=2 — seul service avec 2 réplicas !)
+#  Alertes attendues : FrontendFastBurn (CRITICAL, canal Slack critique, ~3-4 min)
+#  Démo clé : PODS_AFFECTED_PERC=50 (1 pod sur 2) -> AUCUNE alerte ne doit
+#  partir : la redondance absorbe la panne. C'est la preuve que replicas=2
+#  protège le SLO. Relancer ensuite avec 100 % -> panne totale -> alerte.
+#  -> Fais les DEUX runs pour la présentation avant/pendant/après.
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: frontend-pod-delete
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=frontend
+    appkind: deployment
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "300"          # 5 min : burnrate5m > 14.4 maintenu > `for: 2m`
+            - name: CHAOS_INTERVAL
+              value: "15"
+            - name: FORCE
+              value: "true"
+            # Run A (résilience OK, pas d'alerte) : "50"
+            # Run B (panne totale, FrontendFastBurn) : "100"
+            - name: PODS_AFFECTED_PERC
+              value: "50"
+

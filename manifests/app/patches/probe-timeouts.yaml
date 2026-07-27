@@ -1,0 +1,18 @@
+# patches/probe-timeouts.yaml
+# Patch appliqué à TOUS les deployments listés dans kustomization.yaml
+# Corrige le timeoutSeconds par défaut (1s) trop strict pour l'environnement
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: PLACEHOLDER
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          readinessProbe:
+            timeoutSeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            timeoutSeconds: 3
+            periodSeconds: 15

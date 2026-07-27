@@ -1,0 +1,1080 @@
+# =============================================================================
+#  values.yaml — Umbrella chart d'observabilité (Online Boutique / Istio ambient)
+# -----------------------------------------------------------------------------
+#  Chaque clé de premier niveau correspond à un sous-chart (ou à un alias) déclaré
+#  dans Chart.yaml. On force `fullnameOverride` partout pour garder des noms de
+#  Service DNS stables, indépendants du nom de la release :
+#     prometheus-server / loki / tempo / grafana / otel-collector / otel-agent
+#  Ainsi les endpoints ci-dessous restent valables quel que soit `helm install <nom>`.
+#
+#  CHANGELOG (cette révision) :
+#   - Ajout des recording rules manquantes : sli:productcatalog_availability:ratio6h,
+#     sli:cart_availability:ratio6h, slo:productcatalog_availability:burnrate30m/6h,
+#     slo:cart_availability:burnrate30m/6h.
+#   - Remplacement des alertes ProductCatalogDegraded / CartDegraded (seuil simple)
+#     par le pattern multi-window multi-burn-rate FastBurn/SlowBurn, aligné sur
+#     checkout_success / frontend_availability.
+#   - Ajout des inhibit_rules correspondantes (FastBurn inhibe SlowBurn, même `slo`).
+#   - Calibration chaos (EXP 2/3/4) : `for:` des FastBurn abaissé de 2m à 1m et
+#     `for:` de CheckoutHighLatencyP99 abaissé de 5m à 2m. Avec un chaos de 300 s,
+#     l'injection réelle ne dure que ~4 min (setup Litmus déduit) : un `for:` long
+#     laissait l'alerte en pending jusqu'à la fin du chaos sans jamais passer firing.
+#   - Réintroduction de ProductCatalogDegraded / CartDegraded (seuil simple
+#     SLI 5m < 99 % pendant 5 min) EN COMPLÉMENT des Fast/SlowBurn : avec un SLO
+#     à 99 %, le fast-burn exige > 14,4 % d'erreurs sur la fenêtre 1h (≈ 8,6 min
+#     de panne totale) — inatteignable avec les chaos de 420 s des EXP 1 et 7.
+#     Les inhibit_rules FastBurn -> Degraded évitent les doublons Slack.
+#   - SLO composite "parcours utilisateur" (99,5 %) : SLI produit des 4 maillons
+#     (frontend x productcatalog x cart x checkout), burnrates 4 fenêtres,
+#     alertes UserJourneyFastBurn/SlowBurn/Degraded, inhibées quand un maillon
+#     crie déjà (voir avertissement méthodologique sur la recording rule).
+#   - Latence frontend : sli:frontend_latency_p99ms:5m + FrontendHighLatencyP99
+#     (P99 > 800 ms, for: 2m, warning) — comble l'angle mort noté à l'EXP 5
+#     (CPU-hog : le frontend ralentit sans 5xx ni alerte).
+# =============================================================================
+
+# =============================================================================
+#  PROMETHEUS  (métriques)
+# =============================================================================
+prometheus:
+  fullnameOverride: prometheus
+
+  server:
+    persistentVolume:
+      enabled: false
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 100m
+      limits:
+        memory: 512Mi
+        cpu: 300m
+    service:
+      type: ClusterIP
+    # CORRECTION : le collector OTel pousse les métriques via `prometheusremotewrite`
+    # vers /api/v1/write. Sans ce flag, Prometheus renvoie 404 sur le remote-write.
+    extraFlags:
+      - web.enable-lifecycle
+      - web.enable-remote-write-receiver
+  alertmanager:
+    enabled: true
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        memory: 64Mi
+        cpu: 25m
+      limits:
+        memory: 128Mi
+        cpu: 100m
+    extraSecretMounts:
+      - name: slack-webhook
+        secretName: alertmanager-slack-webhook
+        mountPath: /etc/alertmanager/secrets
+        readOnly: true
+    config:
+      global:
+        resolve_timeout: 5m
+      route:
+        receiver: default
+        group_by: ['alertname', 'slo']
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+        routes:
+          - match:
+              alertname: Watchdog
+            receiver: watchdog-channel
+            repeat_interval: 5m
+          # AJOUT (agent SRE) : chaque alerte warning/critical part AUSSI vers
+          # le bridge HolmesGPT. `continue: true` -> l'alerte poursuit ensuite
+          # vers slack-critical / default : le pipeline Slack existant est
+          # inchangé. Placée AVANT les routes critical/warning car celles-ci
+          # ont `continue: false` (l'inverse couperait le flux vers le bridge).
+          - match_re:
+              severity: critical|warning
+            receiver: holmes-bridge
+            continue: true
+            group_wait: 30s
+            group_interval: 5m
+            repeat_interval: 4h
+          - match:
+              severity: critical
+            receiver: slack-critical
+            continue: false
+          - match:
+              severity: warning
+            receiver: default
+            continue: false
+      inhibit_rules:
+        - source_match:
+            alertname: CheckoutFastBurn
+          target_match:
+            alertname: CheckoutSlowBurn
+          equal: ['slo']
+        - source_match:
+            alertname: FrontendFastBurn
+          target_match:
+            alertname: FrontendSlowBurn
+          equal: ['slo']
+        # AJOUT : mêmes garde-fous anti-doublon pour ProductCatalog et Cart,
+        # maintenant qu'ils suivent le pattern FastBurn/SlowBurn.
+        - source_match:
+            alertname: ProductCatalogFastBurn
+          target_match:
+            alertname: ProductCatalogSlowBurn
+          equal: ['slo']
+        - source_match:
+            alertname: CartFastBurn
+          target_match:
+            alertname: CartSlowBurn
+          equal: ['slo']
+        # AJOUT : les alertes Degraded (seuil simple, réintroduites pour les
+        # EXP 1 et 7) sont inhibées quand le FastBurn du même SLO crie déjà.
+        - source_match:
+            alertname: ProductCatalogFastBurn
+          target_match:
+            alertname: ProductCatalogDegraded
+          equal: ['slo']
+        - source_match:
+            alertname: CartFastBurn
+          target_match:
+            alertname: CartDegraded
+          equal: ['slo']
+        # AJOUT : anti-cascade du SLO composite. Le SLI "parcours" est un
+        # produit qui inclut les 4 maillons : dès qu'un Fast/Slow/Degraded
+        # d'un maillon crie, les alertes UserJourney* deviennent presque
+        # mécaniquement vraies — on supprime le doublon, l'alerte du maillon
+        # est plus actionnable (elle désigne la cause). UserJourney* ne notifie
+        # donc seule que si AUCUN maillon individuel n'a déclenché (dégradation
+        # diffuse répartie sur plusieurs services — précisément le cas que le
+        # composite est censé attraper).
+        - source_match_re:
+            alertname: (Checkout|Frontend|ProductCatalog|Cart)(FastBurn|SlowBurn|Degraded)
+          target_match_re:
+            alertname: UserJourney(FastBurn|SlowBurn|Degraded)
+        # Et la hiérarchie interne du composite (même pattern que les maillons).
+        - source_match:
+            alertname: UserJourneyFastBurn
+          target_match_re:
+            alertname: UserJourney(SlowBurn|Degraded)
+          equal: ['slo']
+      receivers:
+        # AJOUT (agent SRE) : receiver webhook vers le bridge HolmesGPT.
+        - name: holmes-bridge
+          webhook_configs:
+            - url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
+              send_resolved: false   # passer à true pour activer le post-mortem
+                                     # (avec POSTMORTEM_ENABLED=true côté bridge)
+              max_alerts: 5          # borne la taille du payload groupé
+        - name: default
+          slack_configs:
+            - api_url_file: /etc/alertmanager/secrets/slack-url-default
+              send_resolved: true
+              color: '{{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}{{ else }}good{{ end }}'
+              title: '{{ if eq .Status "firing" }}🔴{{ else }}✅{{ end }} [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+              title_link: '{{ .CommonAnnotations.runbook_url }}'
+              text: >-
+                *Service concerné :* `{{ .CommonLabels.slo }}`
+                *Sévérité :* {{ .CommonLabels.severity }}
+                *Description :* {{ .CommonAnnotations.description }}
+                {{ if eq .Status "firing" }}*Depuis :* {{ .CommonAnnotations.summary }}{{ end }}
+              footer: 'Prometheus Alertmanager — Online Boutique'
+              actions:
+                - type: button
+                  text: '📊 Voir le Dashboard'
+                  url: '{{ .CommonAnnotations.runbook_url }}'
+
+        - name: slack-critical
+          slack_configs:
+            - api_url_file: /etc/alertmanager/secrets/slack-url-critical
+              send_resolved: true
+              color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+              title: '{{ if eq .Status "firing" }}🚨{{ else }}✅{{ end }} [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} — CRITIQUE'
+              title_link: '{{ .CommonAnnotations.runbook_url }}'
+              text: >-
+                *Parcours impacté :* `{{ .CommonLabels.slo }}`
+                *Description :* {{ .CommonAnnotations.description }}
+                {{ if eq .Status "firing" }}⚠️ *Action requise — impact direct sur l'expérience utilisateur*{{ else }}✅ *Résolu — situation revenue à la normale*{{ end }}
+              footer: 'Prometheus Alertmanager — Online Boutique — Canal Critique'
+              actions:
+                - type: button
+                  text: '📊 Voir le Dashboard'
+                  url: '{{ .CommonAnnotations.runbook_url }}'
+
+        - name: watchdog-channel
+          slack_configs:
+            - api_url_file: /etc/alertmanager/secrets/slack-url-default
+              send_resolved: false
+              color: 'good'
+              title: '💓 Watchdog — monitoring actif'
+              text: 'Ce message se répète toutes les 5 minutes tant que Prometheus/Alertmanager fonctionnent normalement. Son absence prolongée indique une panne de la chaîne de monitoring elle-même.'
+              footer: 'Prometheus Alertmanager — Heartbeat'
+
+  prometheus-pushgateway:
+    enabled: false
+  kube-state-metrics:
+    enabled: true
+  prometheus-node-exporter:
+    enabled: true
+
+  # Recording rules SLI/SLO + alerting rules (fusion des 3 groupes logiques :
+  # SLI bruts, SLO/burn-rate dérivés, alertes multi-burn-rate).
+  serverFiles:
+    recording_rules.yml:
+      groups:
+        - name: user_facing_sli
+          # CORRIGE (chaos EXP1) : les backends sont gRPC — quand un pod est
+          # injoignable, Envoy/waypoint repond en trailers-only HTTP 200 +
+          # grpc_response_status=14 (UNAVAILABLE). Compter seulement les 5xx
+          # laissait le SLI a 100% pendant un pod-delete. Une erreur est donc :
+          # 5xx OU grpc_response_status serveur (2,4,8,12,13,14,15).
+          # NE PAS compter response_code="0" comme erreur : ce code couvre les
+          # requetes abandonnees par le CLIENT (deconnexions du loadgenerator)
+          # et avait fait s'effondrer artificiellement le SLI frontend a ~23%
+          # (burn rate ~770, FrontendFastBurn declenche sans panne reelle).
+          rules:
+            # --- Checkout success (checkout + payment + shipping) -------------
+            - record: sli:checkout_success:ratio5m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[5m]))
+            - record: sli:checkout_success:ratio30m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[30m]))
+            - record: sli:checkout_success:ratio1h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[1h]))
+            - record: sli:checkout_success:ratio6h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[6h]))
+            - record: sli:checkout_success:ratio30d
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30d]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload=~"checkoutservice|paymentservice|shippingservice"}[30d]))
+
+            # --- Frontend availability (fenêtres 5m/30m/1h/6h ajoutées — manquaient) ---
+            - record: sli:frontend_availability:ratio5m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[5m]))
+            - record: sli:frontend_availability:ratio30m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[30m]))
+            - record: sli:frontend_availability:ratio1h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[1h]))
+            - record: sli:frontend_availability:ratio6h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[6h]))
+            - record: sli:frontend_availability:ratio30d
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30d]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="frontend"}[30d]))
+
+            # --- Productcatalog availability ---------------------------------
+            - record: sli:productcatalog_availability:ratio5m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[5m]))
+            - record: sli:productcatalog_availability:ratio30m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[30m]))
+            - record: sli:productcatalog_availability:ratio1h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[1h]))
+            # AJOUT : fenêtre 6h manquante, nécessaire au slow-burn (30m ET 6h).
+            - record: sli:productcatalog_availability:ratio6h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="productcatalogservice"}[6h]))
+
+            # --- Cart availability -------------------------------------------
+            - record: sli:cart_availability:ratio5m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[5m]))
+            - record: sli:cart_availability:ratio30m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[30m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[30m]))
+            - record: sli:cart_availability:ratio1h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[1h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[1h]))
+            # AJOUT : fenêtre 6h manquante, nécessaire au slow-burn (30m ET 6h).
+            - record: sli:cart_availability:ratio6h
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[6h]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="cartservice"}[6h]))
+              # --- Redis-cart dependency (cascade vers cartservice) ---
+            - record: sli:redis_cart_availability:ratio5m
+              expr: |
+                sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="redis-cart",response_code!~"5..",grpc_response_status!~"2|4|8|12|13|14|15"}[5m]))
+                / sum(rate(istio_requests_total{reporter=~"source|waypoint",destination_workload="redis-cart"}[5m]))
+
+            # --- Latence P99 checkout (ms) -------------------------------------
+            # AJOUT : recording rule dédiée pour deux usages :
+            #  1. l'alerte CheckoutHighLatencyP99 (expression simplifiée) ;
+            #  2. les promProbes Litmus (EXP 4) — une probe exécute sa requête
+            #     via /bin/sh : guillemets et pipes (reporter=~"source|waypoint")
+            #     y sont détruits (PROM_PROBE_ERROR "unexpected identifier").
+            #     Un nom de métrique nu, sans matcher, passe sans échappement.
+            - record: sli:checkout_latency_p99ms:5m
+              expr: |
+                histogram_quantile(0.99,
+                  sum(rate(istio_request_duration_milliseconds_bucket{reporter=~"source|waypoint",destination_workload="checkoutservice"}[5m])) by (le)
+                )
+
+            # --- Restarts recommendationservice (probe Litmus EXP 6) ----------
+            # AJOUT : les promProbes Litmus n'acceptent que des noms de métriques
+            # nus (pas de matchers). Cette rule permet à la probe de l'EXP 6 de
+            # vérifier ">= 3 restarts" (seuil de la règle PodRestartingFrequently
+            # durcie) en mode EOT, même quand le fault finit en CHAOS_INJECT_ERROR
+            # (stress-ng meurt avec le conteneur qu'il fait OOM — group kill).
+            - record: chaos:recommendation_restarts:increase15m
+              expr: |
+                sum(increase(kube_pod_container_status_restarts_total{namespace="online-boutique",pod=~"recommendationservice.*",container="server"}[15m]))
+
+            # --- Latence P99 frontend (ms) -------------------------------------
+            # AJOUT : même mécanique que sli:checkout_latency_p99ms:5m. Comble
+            # l'angle mort noté à l'EXP 5 : le frontend peut ralentir (famine
+            # CPU sous limite stricte) sans produire ni 5xx ni alerte.
+            - record: sli:frontend_latency_p99ms:5m
+              expr: |
+                histogram_quantile(0.99,
+                  sum(rate(istio_request_duration_milliseconds_bucket{reporter=~"source|waypoint",destination_workload="frontend"}[5m])) by (le)
+                )
+
+            # --- SLI composite "parcours utilisateur" (bout-en-bout approché) --
+            # ⚠️ AVERTISSEMENT MÉTHODOLOGIQUE (à assumer tel quel) : ce n'est
+            # PAS un vrai taux de succès de parcours mesuré — Prometheus ne
+            # sait pas suivre une session unique à travers plusieurs services.
+            # C'est une approximation par PRODUIT DE PROBABILITÉS qui suppose
+            # les pannes indépendantes entre services ; quand une panne commune
+            # fait échouer cart ET checkout sur les mêmes requêtes, le produit
+            # SOUS-ESTIME le vrai taux de succès. Pratique SRE reconnue en
+            # l'absence de synthetic monitoring. La méthode rigoureuse serait
+            # une sonde synthétique dédiée (script simulant réellement
+            # GET / -> POST /cart -> POST /cart/checkout et exposant un
+            # pass/fail à Prometheus) : composant à déployer à part, hors
+            # périmètre de simples recording rules.
+            - record: sli:user_journey_success:ratio5m
+              expr: |
+                sli:frontend_availability:ratio5m
+                * sli:productcatalog_availability:ratio5m
+                * sli:cart_availability:ratio5m
+                * sli:checkout_success:ratio5m
+            - record: sli:user_journey_success:ratio30m
+              expr: |
+                sli:frontend_availability:ratio30m
+                * sli:productcatalog_availability:ratio30m
+                * sli:cart_availability:ratio30m
+                * sli:checkout_success:ratio30m
+            - record: sli:user_journey_success:ratio1h
+              expr: |
+                sli:frontend_availability:ratio1h
+                * sli:productcatalog_availability:ratio1h
+                * sli:cart_availability:ratio1h
+                * sli:checkout_success:ratio1h
+            - record: sli:user_journey_success:ratio6h
+              expr: |
+                sli:frontend_availability:ratio6h
+                * sli:productcatalog_availability:ratio6h
+                * sli:cart_availability:ratio6h
+                * sli:checkout_success:ratio6h
+        - name: user_facing_slo
+          rules:
+            # burn_rate = (1 - SLI) / (1 - SLO). SLO checkout=99.95%, frontend=99.9%
+            - record: slo:checkout_success:burnrate5m
+              expr: (1 - sli:checkout_success:ratio5m) / 0.0005
+            - record: slo:checkout_success:burnrate30m
+              expr: (1 - sli:checkout_success:ratio30m) / 0.0005
+            - record: slo:checkout_success:burnrate1h
+              expr: (1 - sli:checkout_success:ratio1h) / 0.0005
+            - record: slo:checkout_success:burnrate6h
+              expr: (1 - sli:checkout_success:ratio6h) / 0.0005
+
+            # Bug corrigé : ratio5m au lieu de ratio30d, + 3 fenêtres ajoutées
+            - record: slo:frontend_availability:burnrate5m
+              expr: (1 - sli:frontend_availability:ratio5m) / 0.001
+            - record: slo:frontend_availability:burnrate30m
+              expr: (1 - sli:frontend_availability:ratio30m) / 0.001
+            - record: slo:frontend_availability:burnrate1h
+              expr: (1 - sli:frontend_availability:ratio1h) / 0.001
+            - record: slo:frontend_availability:burnrate6h
+              expr: (1 - sli:frontend_availability:ratio6h) / 0.001
+
+            # Budget d'erreur restant sur 30j (%), 100 = intact, 0 = épuisé.
+            - record: slo:checkout_success:error_budget_remaining_ratio
+              expr: 100 * (1 - ((1 - sli:checkout_success:ratio30d) / 0.0005))
+            - record: slo:frontend_availability:error_budget_remaining_ratio
+              expr: 100 * (1 - ((1 - sli:frontend_availability:ratio30d) / 0.001))
+
+            # --- ProductCatalog SLO (SLO 99%, error budget 1%) ---
+            - record: slo:productcatalog_availability:burnrate5m
+              expr: (1 - sli:productcatalog_availability:ratio5m) / 0.01
+            - record: slo:productcatalog_availability:burnrate1h
+              expr: (1 - sli:productcatalog_availability:ratio1h) / 0.01
+            # AJOUT : fenêtres 30m et 6h, nécessaires pour ProductCatalogSlowBurn
+            # (pattern (30m > seuil) AND (6h > seuil), cohérent avec checkout/frontend).
+            - record: slo:productcatalog_availability:burnrate30m
+              expr: (1 - sli:productcatalog_availability:ratio30m) / 0.01
+            - record: slo:productcatalog_availability:burnrate6h
+              expr: (1 - sli:productcatalog_availability:ratio6h) / 0.01
+
+            # --- Cart SLO (SLO 99%, error budget 1%) ---
+            - record: slo:cart_availability:burnrate5m
+              expr: (1 - sli:cart_availability:ratio5m) / 0.01
+            - record: slo:cart_availability:burnrate1h
+              expr: (1 - sli:cart_availability:ratio1h) / 0.01
+            # AJOUT : fenêtres 30m et 6h, nécessaires pour CartSlowBurn
+            # (pattern (30m > seuil) AND (6h > seuil), cohérent avec checkout/frontend).
+            - record: slo:cart_availability:burnrate30m
+              expr: (1 - sli:cart_availability:ratio30m) / 0.01
+            - record: slo:cart_availability:burnrate6h
+              expr: (1 - sli:cart_availability:ratio6h) / 0.01
+
+            # --- User journey SLO (SLO 99,5 %, budget 0,5 %) --------------------
+            # SLO intermédiaire entre le checkout strict (99,95 %) et
+            # catalog/cart (99 %) : un ET logique de 4 services est
+            # mécaniquement plus fragile que chacun de ses maillons.
+            - record: slo:user_journey_success:burnrate5m
+              expr: (1 - sli:user_journey_success:ratio5m) / 0.005
+            - record: slo:user_journey_success:burnrate30m
+              expr: (1 - sli:user_journey_success:ratio30m) / 0.005
+            - record: slo:user_journey_success:burnrate1h
+              expr: (1 - sli:user_journey_success:ratio1h) / 0.005
+            - record: slo:user_journey_success:burnrate6h
+              expr: (1 - sli:user_journey_success:ratio6h) / 0.005
+
+    alerting_rules.yml:
+      groups:
+        - name: user_facing_slo_alerts
+          rules:
+            # `for: 1m` (au lieu de 2m) : avec un chaos de 300 s l'injection réelle
+            # dure ~4 min ; la double fenêtre 5m+1h suffit déjà contre les faux
+            # positifs, le for: long retardait le firing au-delà de la fenêtre de test.
+            - alert: CheckoutFastBurn
+              expr: slo:checkout_success:burnrate5m > 14.4 and slo:checkout_success:burnrate1h > 14.4
+              for: 1m
+              labels:
+                severity: critical
+                slo: checkout_success
+              annotations:
+                summary: Checkout Success Rate en burn rapide
+                description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le parcours achat (checkout/payment/shipping) est en échec depuis plus de 1 minute — impact direct sur le revenu.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: CheckoutSlowBurn
+              expr: slo:checkout_success:burnrate30m > 6 and slo:checkout_success:burnrate6h > 6
+              for: 15m
+              labels:
+                severity: warning
+                slo: checkout_success
+              annotations:
+                summary: Checkout Success Rate en dégradation lente
+                description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h — surveiller avant que ça devienne critique.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # `for: 1m` : même calibration chaos que CheckoutFastBurn (EXP 2 run B,
+            # pod-delete 100 % de 300 s — la panne est intermittente, kill toutes
+            # les 15 s, le firing doit tenir dans la fenêtre d'injection).
+            - alert: FrontendFastBurn
+              expr: slo:frontend_availability:burnrate5m > 14.4 and slo:frontend_availability:burnrate1h > 14.4
+              for: 1m
+              labels:
+                severity: critical
+                slo: frontend_availability
+              annotations:
+                summary: Frontend Availability en burn rapide
+                description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le point d''entrée principal du site est en échec depuis plus de 1 minute — tous les utilisateurs sont potentiellement impactés.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: FrontendSlowBurn
+              expr: slo:frontend_availability:burnrate30m > 6 and slo:frontend_availability:burnrate6h > 6
+              for: 15m
+              labels:
+                severity: warning
+                slo: frontend_availability
+              annotations:
+                summary: Frontend Availability en dégradation lente
+                description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # REMPLACE l'ancienne alerte ProductCatalogDegraded (seuil simple
+            # sli < 0.99 pendant 5m) par le pattern multi-window multi-burn-rate,
+            # cohérent avec checkout/frontend : réagit vite sur une panne franche
+            # (5m ET 1h) et détecte aussi une dégradation lente (30m ET 6h).
+            - alert: ProductCatalogFastBurn
+              expr: slo:productcatalog_availability:burnrate5m > 14.4 and slo:productcatalog_availability:burnrate1h > 14.4
+              for: 1m
+              labels:
+                severity: critical
+                slo: productcatalog_availability
+              annotations:
+                summary: Product Catalog en burn rapide
+                description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le service productcatalogservice est en échec depuis plus de 1 minute — impact direct sur la navigation et le catalogue produit.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: ProductCatalogSlowBurn
+              expr: slo:productcatalog_availability:burnrate30m > 6 and slo:productcatalog_availability:burnrate6h > 6
+              for: 15m
+              labels:
+                severity: warning
+                slo: productcatalog_availability
+              annotations:
+                summary: Product Catalog en dégradation lente
+                description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h — vérifier les logs et les redémarrages récents avant que ça devienne critique.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # REMPLACE l'ancienne alerte CartDegraded (seuil simple sli < 0.99
+            # pendant 5m) par le même pattern multi-window multi-burn-rate.
+            - alert: CartFastBurn
+              expr: slo:cart_availability:burnrate5m > 14.4 and slo:cart_availability:burnrate1h > 14.4
+              for: 1m
+              labels:
+                severity: critical
+                slo: cart_availability
+              annotations:
+                summary: Cart en burn rapide
+                description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le service cartservice est en échec depuis plus de 1 minute — impact direct sur le panier et donc le funnel d''achat, possible panne redis-cart en amont.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: CartSlowBurn
+              expr: slo:cart_availability:burnrate30m > 6 and slo:cart_availability:burnrate6h > 6
+              for: 15m
+              labels:
+                severity: warning
+                slo: cart_availability
+              annotations:
+                summary: Cart en dégradation lente
+                description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h — vérifier redis-cart en amont.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # RÉINTRODUITES (complément des Fast/SlowBurn) pour la couverture
+            # des EXP chaos 1 et 7 : sur un SLO à 99 % (budget 1 %), le fast-burn
+            # exige > 14,4 % d'erreurs sur la fenêtre 1h, soit ≈ 8,6 min de panne
+            # totale — hors de portée d'un chaos de 420 s, a fortiori en panne
+            # intermittente (pod-delete). Le seuil simple SLI 5m < 99 % pendant
+            # 5 min détecte ces dégradations courtes ; le FastBurn du même SLO
+            # l'inhibe côté Alertmanager pour éviter les doublons.
+            - alert: ProductCatalogDegraded
+              expr: sli:productcatalog_availability:ratio5m < 0.99
+              for: 5m
+              labels:
+                severity: warning
+                slo: productcatalog_availability
+              annotations:
+                summary: Product Catalog dégradé (SLI < 99 %)
+                description: 'Taux de succès actuel (5m) = {{ $value | humanizePercentage }} (seuil : 99 %). Le service productcatalogservice échoue par intermittence depuis plus de 5 minutes — vérifier l''état des pods (redémarrages, kills) et la navigation catalogue.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: CartDegraded
+              expr: sli:cart_availability:ratio5m < 0.99
+              for: 5m
+              labels:
+                severity: warning
+                slo: cart_availability
+              annotations:
+                summary: Cart dégradé (SLI < 99 %)
+                description: 'Taux de succès actuel (5m) = {{ $value | humanizePercentage }} (seuil : 99 %). Le service cartservice échoue depuis plus de 5 minutes — possible panne redis-cart en amont (dépendance non instrumentable, détection via le SLI du consommateur).'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # --- Parcours utilisateur (SLO composite 99,5 %) -------------------
+            # Même pattern que le reste du fichier (multi-burn-rate + seuil
+            # simple). Ces alertes sont inhibées côté Alertmanager dès qu'un
+            # Fast/Slow/Degraded d'un maillon crie déjà : le SLI journey étant
+            # un produit qui inclut les 4 SLI, il devient presque mécaniquement
+            # vrai en cascade — sans inhibition, chaque panne d'un seul maillon
+            # produirait un doublon Slack.
+            - alert: UserJourneyFastBurn
+              expr: slo:user_journey_success:burnrate5m > 14.4 and slo:user_journey_success:burnrate1h > 14.4
+              for: 1m
+              labels:
+                severity: critical
+                slo: user_journey_success
+              annotations:
+                summary: Parcours utilisateur en burn rapide
+                description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le parcours composite (frontend → catalogue → panier → checkout) est en échec — dégradation bout-en-bout de l''expérience utilisateur. SLI approché par produit des 4 maillons (voir recording rule).'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: UserJourneySlowBurn
+              expr: slo:user_journey_success:burnrate30m > 6 and slo:user_journey_success:burnrate6h > 6
+              for: 15m
+              labels:
+                severity: warning
+                slo: user_journey_success
+              annotations:
+                summary: Parcours utilisateur en dégradation lente
+                description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive du parcours composite sur 30m et 6h — identifier le maillon en cause via les burn rates par service.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: UserJourneyDegraded
+              expr: sli:user_journey_success:ratio5m < 0.995
+              for: 5m
+              labels:
+                severity: warning
+                slo: user_journey_success
+              annotations:
+                summary: Parcours utilisateur dégradé (SLI < 99,5 %)
+                description: 'Taux de succès composite actuel (5m) = {{ $value | humanizePercentage }} (SLO : 99,5 %). Un des 4 maillons du parcours (frontend/catalogue/panier/checkout) se dégrade depuis plus de 5 minutes — comparer les SLI par service pour isoler le maillon.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            - alert: PodRestartingFrequently
+              expr: increase(kube_pod_container_status_restarts_total{namespace="online-boutique"}[15m]) > 2
+              for: 2m
+              labels:
+                severity: warning
+                slo: infra
+              annotations:
+                summary: 'Pod {{ $labels.pod }} a redémarré récemment'
+                description: '{{ $value | printf "%.0f" }} redémarrage(s) détecté(s) sur le pod {{ $labels.pod }} (conteneur {{ $labels.container }}) dans les 15 dernières minutes — vérifier OOM/liveness probe.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # `for: 2m` (au lieu de 5m) : l'EXP 4 (network-latency +2 s) dure 300 s
+            # dont ~4 min d'injection réelle. Le P99 sur fenêtre [5m] met déjà
+            # ~1-2 min à refléter la dégradation ; avec for: 5m l'alerte restait
+            # en pending pendant tout le test et ne passait jamais firing.
+            - alert: CheckoutHighLatencyP99
+              # Réécrite sur la recording rule sli:checkout_latency_p99ms:5m
+              # (même expression qu'avant, factorisée — voir user_facing_sli).
+              expr: sli:checkout_latency_p99ms:5m > 1000
+              for: 2m
+              labels:
+                severity: warning
+                slo: checkout_latency
+              annotations:
+                summary: Latence P99 checkout > 1s
+                description: 'P99 actuel = {{ $value | printf "%.0f" }} ms (seuil : 1000 ms).'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+            # AJOUT : comble l'angle mort documenté à l'EXP 5 — le frontend
+            # peut ralentir (throttling CPU sous limite stricte) sans produire
+            # ni 5xx ni alerte. Seuil 800 ms, plus strict que le checkout
+            # (1000 ms) : c'est le point d'entrée, sa latence est celle que
+            # l'utilisateur perçoit directement.
+            - alert: FrontendHighLatencyP99
+              expr: sli:frontend_latency_p99ms:5m > 800
+              for: 2m
+              labels:
+                severity: warning
+                slo: frontend_latency
+              annotations:
+                summary: Latence P99 frontend > 800 ms
+                description: 'P99 actuel = {{ $value | printf "%.0f" }} ms (seuil : 800 ms) — expérience utilisateur dégradée sur le point d''entrée sans erreurs visibles ; possible famine CPU (throttling) : vérifier le panel CPU Usage per Pod.'
+                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+
+        - name: meta_monitoring
+          rules:
+            - alert: Watchdog
+              expr: vector(1)
+              labels:
+                severity: none
+              annotations:
+                summary: "Heartbeat monitoring actif"
+                description: "Ce message se répète toutes les 5 minutes. Son absence prolongée indique une panne d'Alertmanager ou de Prometheus."
+
+# =============================================================================
+#  LOKI  (logs) — mode SingleBinary, filesystem (remplace le values de 173 Ko)
+# =============================================================================
+loki:
+  fullnameOverride: loki
+  deploymentMode: SingleBinary
+
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    storage:
+      type: filesystem
+    limits_config:
+      allow_structured_metadata: true
+      volume_enabled: true
+    # Attributs de ressources OTLP promus en labels d'index (corrélation pod/ns).
+    distributor:
+      otlp_config:
+        default_resource_attributes_as_index_labels:
+          - k8s.namespace.name
+          - k8s.pod.name
+          - k8s.deployment.name
+          - k8s.node.name
+
+  singleBinary:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+  # On désactive tout le reste (mode mono-binaire minimal).
+  chunksCache:
+    enabled: false
+
+  resultsCache:
+    enabled: false
+  backend: { replicas: 0 }
+  read: { replicas: 0 }
+  write: { replicas: 0 }
+  gateway:
+    enabled: false
+  monitoring:
+    selfMonitoring:
+      enabled: false
+      grafanaAgent:
+        installOperator: false
+    lokiCanary:
+      enabled: false
+  test:
+    enabled: false
+
+# =============================================================================
+#  TEMPO  (traces) — remplace Jaeger. Reçoit OTLP + Zipkin.
+# =============================================================================
+tempo:
+  fullnameOverride: tempo
+  tempo:
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 50m
+      limits:
+        memory: 1Gi
+        cpu: 500m
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      zipkin:
+        endpoint: 0.0.0.0:9411
+    retention: 24h
+  persistence:
+    enabled: true
+    size: 10Gi
+  service:
+    type: ClusterIP
+  serviceMonitor:
+    enabled: false
+
+# =============================================================================
+#  GRAFANA  (UI) — datasources Prometheus + Loki + Tempo (Jaeger retiré)
+# =============================================================================
+grafana:
+  fullnameOverride: grafana
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+  service:
+    type: NodePort
+    nodePort: 32000
+
+  # ⚠️  À déplacer dans un Secret pour la prod : voir README (admin.existingSecret).
+  adminPassword: admin123
+
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          uid: prometheus
+          url: http://obs-prometheus-server.monitoring.svc.cluster.local
+          isDefault: true
+          access: proxy
+        - name: Loki
+          type: loki
+          uid: loki
+          url: http://loki.monitoring.svc.cluster.local:3100
+          access: proxy
+        - name: Tempo
+          type: tempo
+          uid: tempo
+          url: http://tempo.monitoring.svc.cluster.local:3200
+          access: proxy
+          jsonData:
+            # Corrélation trace -> logs Loki (par pod/namespace).
+            tracesToLogsV2:
+              datasourceUid: loki
+              filterByTraceID: true
+              tags:
+                - key: k8s.namespace.name
+                  value: namespace
+                - key: k8s.pod.name
+                  value: pod
+
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: istio
+          folder: Istio
+          type: file
+          disableDeletion: false
+          options:
+            path: /var/lib/grafana/dashboards/istio
+        # AJOUT : provider dédié aux dashboards SRE maison (Chaos & Incident).
+        # Provisionné depuis un ConfigMap (voir dashboardsConfigMaps) car la
+        # persistance Grafana est désactivée : tout dashboard importé à la main
+        # disparaît à chaque redémarrage du pod (donc à chaque helm upgrade).
+        - name: sre
+          folder: SRE
+          type: file
+          disableDeletion: false
+          options:
+            path: /var/lib/grafana/dashboards/sre
+
+  # ConfigMap monté dans /var/lib/grafana/dashboards/sre — contient TOUS les
+  # dashboards custom (un fichier .json par dashboard, id: null, sans champ
+  # version). À (re)créer depuis le dossier dashboards/ du repo :
+  #   kubectl -n monitoring create configmap sre-dashboards \
+  #     --from-file=dashboards/ --dry-run=client -o yaml | kubectl apply -f -
+  # Règle : ne JAMAIS importer un dashboard à la main dans l'UI — Grafana est
+  # sans persistance, tout import manuel disparaît au redémarrage du pod.
+  # Workflow de modification : éditer dans l'UI -> Export JSON -> remplacer le
+  # fichier dans dashboards/ -> recréer le ConfigMap (recharge auto ~1 min).
+  dashboardsConfigMaps:
+    sre: sre-dashboards
+
+  dashboards:
+    istio:
+      istio-mesh:
+        gnetId: 7639
+        revision: 1
+        datasource:
+          - name: DS_PROMETHEUS
+            value: Prometheus
+      istio-service:
+        gnetId: 7636
+        revision: 1
+        datasource:
+          - name: DS_PROMETHEUS
+            value: Prometheus
+      istio-workload:
+        gnetId: 7630
+        revision: 1
+        datasource:
+          - name: DS_PROMETHEUS
+            value: Prometheus
+      k8s-cluster:
+        gnetId: 6417
+        revision: 1
+        datasource:
+          - name: DS_PROMETHEUS
+            value: Prometheus
+
+  grafana.ini:
+    panels:
+      disable_sanitize_html: true
+    unified_alerting:
+      enabled: false
+
+  env:
+    GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/istio/istio-mesh.json
+
+# =============================================================================
+#  OTEL GATEWAY  (Deployment) — reçoit OTLP/Zipkin de l'app et du mesh,
+#  route : traces -> Tempo, metrics -> Prometheus, logs -> Loki.
+#  Service DNS : otel-collector.monitoring.svc.cluster.local
+#  (adresse à référencer dans meshConfig.defaultConfig.tracing.zipkin d'Istio).
+# =============================================================================
+otelGateway:
+  fullnameOverride: otel-collector
+  mode: deployment
+  replicaCount: 1
+
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.114.0"
+    pullPolicy: IfNotPresent
+  command:
+    name: otelcol-contrib
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+  ports:
+    otlp:
+      enabled: true
+      containerPort: 4317
+      servicePort: 4317
+      protocol: TCP
+    otlp-http:
+      enabled: true
+      containerPort: 4318
+      servicePort: 4318
+      protocol: TCP
+    zipkin:
+      enabled: true
+      containerPort: 9411
+      servicePort: 9411
+      protocol: TCP
+    metrics:
+      enabled: false
+
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      zipkin:
+        endpoint: 0.0.0.0:9411
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 200
+        spike_limit_mib: 50
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+      resource:
+        attributes:
+          - key: cluster
+            value: k3s-stage
+            action: upsert
+    exporters:
+      otlp/tempo:
+        endpoint: tempo.monitoring.svc.cluster.local:4317
+        tls:
+          insecure: true
+      prometheusremotewrite:
+        endpoint: http://obs-prometheus-server.monitoring.svc.cluster.local/api/v1/write
+        tls:
+          insecure: true
+      otlphttp/loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+        tls:
+          insecure: true
+      debug:
+        verbosity: basic
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp, zipkin]
+          processors: [memory_limiter, batch, resource]
+          exporters: [otlp/tempo, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [prometheusremotewrite]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [otlphttp/loki]
+
+# =============================================================================
+#  OTEL AGENT  (DaemonSet) — collecte les logs conteneurs de chaque nœud
+#  (filelog) et les envoie à Loki, enrichis des attributs Kubernetes.
+#  Les presets ajoutent automatiquement : receiver filelog, processor
+#  k8sattributes, volumes hostPath (/var/log/pods), ServiceAccount + RBAC.
+#  -> plus besoin de câbler filelog/RBAC/volumes à la main (bug `k8s_attributes`
+#     corrigé au passage : le presets pose le bon nom `k8sattributes`).
+# =============================================================================
+otelAgent:
+  fullnameOverride: otel-agent
+  mode: daemonset
+
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.114.0"
+    pullPolicy: IfNotPresent
+  command:
+    name: otelcol-contrib
+
+  presets:
+    logsCollection:
+      enabled: true
+      includeCollectorLogs: false
+    kubernetesAttributes:
+      enabled: true
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 400Mi
+      cpu: 200m
+
+  config:
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+      batch: {}
+    exporters:
+      otlphttp/loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [otlphttp/loki]
+
+# =============================================================================
+#  KIALI  (console du service mesh) — tracing pointé vers Tempo (Jaeger retiré)
+# =============================================================================
+kiali:
+  auth:
+    strategy: anonymous
+  deployment:
+    service_type: NodePort
+  server:
+    port: 20001
+  external_services:
+    prometheus:
+      url: http://obs-prometheus-server.monitoring.svc.cluster.local
+    grafana:
+      enabled: true
+      in_cluster_url: http://grafana.monitoring.svc.cluster.local:80
+      url: http://10.0.2.15:32000
+    tracing:
+      enabled: true
+      provider: tempo
+      in_cluster_url: http://tempo.monitoring.svc.cluster.local:3200
+      url: http://tempo.monitoring.svc.cluster.local:3200
+      use_grpc: false

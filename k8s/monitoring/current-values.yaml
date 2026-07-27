@@ -1,0 +1,122 @@
+clusterRole:
+  create: true
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - pods
+    - namespaces
+    verbs:
+    - get
+    - watch
+    - list
+  - apiGroups:
+    - apps
+    resources:
+    - replicasets
+    verbs:
+    - get
+    - watch
+    - list
+config:
+  exporters:
+    otlp/tempo:
+      endpoint: tempo.monitoring.svc.cluster.local:4317
+      tls:
+        insecure: true
+    otlphttp/loki:
+      endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+      tls:
+        insecure: true
+  processors:
+    batch: {}
+    k8sattributes:
+      auth_type: serviceAccount
+      extract:
+        metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.deployment.name
+        - k8s.node.name
+      passthrough: false
+      pod_association:
+      - sources:
+        - from: resource_attribute
+          name: k8s.pod.ip
+    memory_limiter:
+      check_interval: 1s
+      limit_mib: 400
+  receivers:
+    filelog:
+      exclude:
+      - /var/log/pods/*/otel-collector*/*.log
+      include:
+      - /var/log/pods/*/*/*.log
+      include_file_name: false
+      include_file_path: true
+      operators:
+      - id: get-format
+        routes:
+        - expr: body matches "^\\{"
+          output: parser-docker
+        - expr: body matches "^[^ Z]+ "
+          output: parser-crio
+        type: router
+      - id: parser-docker
+        output: extract_metadata_from_filepath
+        timestamp:
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+          parse_from: attributes.time
+        type: json_parser
+      - id: parser-crio
+        output: extract_metadata_from_filepath
+        regex: ^(?P<time>[^ Z]+) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) ?(?P<log>.*)$
+        type: regex_parser
+      - from: attributes["log.file.path"]
+        id: extract_metadata_from_filepath
+        to: resource["filepath"]
+        type: move
+      start_at: beginning
+    otlp:
+      protocols:
+        grpc: {}
+        http: {}
+  service:
+    pipelines:
+      logs:
+        exporters:
+        - otlphttp/loki
+        processors:
+        - memory_limiter
+        - k8sattributes
+        - batch
+        receivers:
+        - filelog
+      traces:
+        exporters:
+        - otlp/tempo
+        processors:
+        - memory_limiter
+        - k8sattributes
+        - batch
+        receivers:
+        - otlp
+image:
+  repository: otel/opentelemetry-collector-k8s
+  tag: latest
+mode: daemonset
+serviceAccount:
+  create: true
+ports:
+  otlp:
+    hostPort: null
+  otlp-http:
+    hostPort: null
+  zipkin:
+    hostPort: null
+  jaeger-compact:
+    hostPort: null
+  jaeger-grpc:
+    hostPort: null
+  jaeger-thrift:
+    hostPort: null

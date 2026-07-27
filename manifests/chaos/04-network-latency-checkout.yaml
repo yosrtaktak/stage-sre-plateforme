@@ -1,0 +1,41 @@
+# =============================================================================
+#  EXP 4 — Network Latency +2000 ms : checkoutservice (replicas=1)
+#  Alertes attendues : ❗ AUCUNE — et c'est voulu.
+#  Cette expérience DÉMONTRE UN ANGLE MORT de ta configuration values.yaml :
+#  tous tes SLI sont basés sur les codes 5xx ; il n'existe aucune alerte de
+#  latence. Le P99 va exploser sur le dashboard (panel Latency Percentiles),
+#  l'expérience utilisateur est dégradée... et Slack reste silencieux.
+#  -> Conclusion à présenter : ajouter une alerte de latence P99 (proposition
+#     dans chaos/README.md, section "Angle mort latence").
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: checkout-network-latency
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=checkoutservice
+    appkind: deployment
+  experiments:
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "300"
+            - name: NETWORK_LATENCY
+              value: "2000"         # +2 s sur chaque paquet sortant
+            - name: JITTER
+              value: "200"
+            - name: TARGET_CONTAINER
+              value: "server"
+            - name: PODS_AFFECTED_PERC
+              value: "100"
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/k3s/containerd/containerd.sock"

@@ -1,0 +1,200 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/loadgenerator"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-productcatalogservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: productcatalogservice
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/online-boutique/sa/frontend
+              - cluster.local/ns/online-boutique/sa/checkoutservice
+              - cluster.local/ns/online-boutique/sa/recommendationservice
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-currencyservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: currencyservice
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/online-boutique/sa/frontend
+              - cluster.local/ns/online-boutique/sa/checkoutservice
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-cartservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: cartservice
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/online-boutique/sa/frontend
+              - cluster.local/ns/online-boutique/sa/checkoutservice
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-recommendationservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: recommendationservice
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/frontend"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-shippingservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: shippingservice
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/online-boutique/sa/frontend
+              - cluster.local/ns/online-boutique/sa/checkoutservice
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-checkoutservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: checkoutservice
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/frontend"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-paymentservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: paymentservice
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/checkoutservice"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-emailservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: emailservice
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/checkoutservice"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-adservice
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: adservice
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/frontend"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]
+---
+# redis-cart isn't an Istio "app" with its own SA logic beyond cartservice,
+# but we still scope it explicitly for defense in depth.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-redis-cart
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: redis-cart
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/cartservice"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/online-boutique/sa/waypoint"]

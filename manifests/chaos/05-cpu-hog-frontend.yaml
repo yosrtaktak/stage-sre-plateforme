@@ -1,0 +1,39 @@
+# =============================================================================
+#  EXP 5 — CPU Hog : frontend (limit cpu: 200m -> throttling massif garanti)
+#  Alertes attendues : probablement AUCUNE (2e angle mort : pas d'alerte CPU
+#  ni latence). Effets visibles : CPU per Pod au plafond (200m), P50/P99 ↑ sur
+#  le dashboard. Si la lenteur provoque des timeouts côté loadgenerator,
+#  quelques 5xx peuvent apparaître sans atteindre les seuils de burn rate.
+#  Preuve que le monitoring "ressources" (dashboard) voit ce que l'alerting
+#  ne voit pas encore.
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: frontend-cpu-hog
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=frontend
+    appkind: deployment
+  experiments:
+    - name: pod-cpu-hog
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "300"
+            - name: CPU_CORES
+              value: "1"            # 1 core demandé >> limit 200m -> throttling
+            - name: TARGET_CONTAINER
+              value: "server"
+            - name: PODS_AFFECTED_PERC
+              value: "100"          # les 2 réplicas frontend, sinon l'autre absorbe
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+            - name: SOCKET_PATH
+              value: "/run/k3s/containerd/containerd.sock"
+

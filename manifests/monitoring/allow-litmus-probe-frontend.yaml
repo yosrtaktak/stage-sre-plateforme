@@ -1,0 +1,21 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-litmus-probe-frontend
+  namespace: online-boutique
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/litmus/sa/argo-chaos"
+              - "cluster.local/ns/litmus/sa/litmus"
+              - "cluster.local/ns/litmus/sa/default"
+      to:
+        - operation:
+            methods: ["GET"]
+            paths: ["/_healthz"]

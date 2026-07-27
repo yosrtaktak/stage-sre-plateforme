@@ -1,0 +1,34 @@
+# =============================================================================
+#  EXP 1 — Pod Delete : productcatalogservice (replicas=1)
+#  Alertes attendues : ProductCatalogDegraded (warning, après ~6 min)
+#                      + FrontendFastBurn possible (cascade : la home page du
+#                        frontend renvoie 500 si le catalogue est indisponible)
+#  Calibration : le pod Go redémarre en quelques secondes -> on tue en boucle
+#  (toutes les 15 s pendant 7 min) pour maintenir ratio5m < 0.99 pendant les
+#  5 min du `for:` de l'alerte. Un one-shot de 60 s ne déclencherait RIEN.
+# =============================================================================
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: productcatalog-pod-delete
+  namespace: online-boutique
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-sa
+  appinfo:
+    appns: online-boutique
+    applabel: app=productcatalogservice
+    appkind: deployment
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "420"          # 7 min : laisse le temps au `for: 5m` de l'alerte
+            - name: CHAOS_INTERVAL
+              value: "15"           # re-tue le pod toutes les 15 s (recréation rapide)
+            - name: FORCE
+              value: "true"         # grace period 0 -> coupure franche
+            - name: PODS_AFFECTED_PERC
+              value: "100"

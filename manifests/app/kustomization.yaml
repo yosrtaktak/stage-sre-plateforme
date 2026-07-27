@@ -1,0 +1,128 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: online-boutique
+resources:
+  - namespace.yaml
+  - istio
+  - redis-cart/deployment.yaml
+  - productcatalogservice/deployment.yaml
+  - currencyservice/deployment.yaml
+  - paymentservice/deployment.yaml
+  - shippingservice/deployment.yaml
+  - emailservice/deployment.yaml
+  - adservice/deployment.yaml
+  - recommendationservice/deployment.yaml
+  - cartservice/deployment.yaml
+  - checkoutservice/deployment.yaml
+  - frontend/deployment.yaml
+  - frontend/pdb.yaml
+  - loadgenerator/deployment.yaml
+patches:
+  - path: patches/probe-timeouts.yaml
+    target:
+      kind: Deployment
+      name: productcatalogservice
+  - path: patches/probe-timeouts.yaml
+    target:
+      kind: Deployment
+      name: paymentservice
+  - path: patches/probe-timeouts.yaml
+    target:
+      kind: Deployment
+      name: cartservice
+  - path: patches/probe-timeouts.yaml
+    target:
+      kind: Deployment
+      name: recommendationservice
+  - path: patches/probe-timeouts.yaml
+    target:
+      kind: Deployment
+      name: frontend
+  - path: patches/checkout-probes.yaml
+    target:
+      kind: Deployment
+      name: checkoutservice
+  - path: patches/rolling-update-strategy.yaml
+    target:
+      kind: Deployment
+      name: productcatalogservice
+  - path: patches/rolling-update-strategy.yaml
+    target:
+      kind: Deployment
+      name: paymentservice
+  - path: patches/rolling-update-strategy.yaml
+    target:
+      kind: Deployment
+      name: cartservice
+  - path: patches/rolling-update-strategy.yaml
+    target:
+      kind: Deployment
+      name: recommendationservice
+  - path: patches/rolling-update-strategy.yaml
+    target:
+      kind: Deployment
+      name: frontend
+  - path: patches/rolling-update-strategy.yaml
+    target:
+      kind: Deployment
+      name: checkoutservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: recommendationservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: recommendationservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: productcatalogservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: recommendationservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: productcatalogservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: cartservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: paymentservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: checkoutservice
+  - path: patches/security-context.yaml
+    target:
+      kind: Deployment
+      name: frontend
+  - path: patches/standard-labels.yaml
+    target:
+      kind: Deployment
+      name: productcatalogservice
+  - path: patches/standard-labels.yaml
+    target:
+      kind: Deployment
+      name: paymentservice
+  - path: patches/standard-labels.yaml
+    target:
+      kind: Deployment
+      name: cartservice
+  - path: patches/standard-labels.yaml
+    target:
+      kind: Deployment
+      name: recommendationservice
+  - path: patches/standard-labels.yaml
+    target:
+      kind: Deployment
+      name: frontend
+  - path: patches/standard-labels.yaml
+    target:
+      kind: Deployment
+      name: checkoutservice
