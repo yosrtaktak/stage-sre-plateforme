@@ -1,0 +1,94 @@
+# =============================================================================
+#  NetworkPolicies — correctif S1 de l'audit (AUDIT-SYSTEME-IA.md)
+# -----------------------------------------------------------------------------
+#  Menace couverte : sans ces règles, N'IMPORTE QUEL pod du cluster (ex. un
+#  pod compromis d'online-boutique, ou un helper Litmus) peut :
+#   (a) POSTer sur bridge:/webhook  -> déclencher des enquêtes = brûler le
+#       quota LLM (déni de service) ;
+#   (b) POSTer sur rag:/add         -> EMPOISONNER la mémoire des incidents
+#       (de faux "remèdes" orienteraient les futurs diagnostics) ;
+#   (c) interroger holmes:/api/chat -> utiliser l'agent comme oracle de
+#       lecture du cluster.
+#  Principe : l'ingress de chaque composant est restreint au namespace
+#  monitoring (Alertmanager, Prometheus, bridge, Holmes, Grafana y vivent
+#  tous) + au nœud (kubelet, pour les probes liveness/readiness).
+#
+#  ⚠️ AVANT d'appliquer : vérifier le label des pods Holmes (le sélecteur
+#  ci-dessous doit correspondre) :
+#    kubectl -n monitoring get pods --show-labels | grep holmes
+#  Adapter `app: holmes` si le chart utilise un autre label.
+#  ⚠️ L'IP du nœud (10.0.2.15, VM NAT) est en dur pour les probes kubelet —
+#  à ajuster si le réseau de la VM change : kubectl get nodes -o wide
+#
+#  TEST après apply (aucun pod ne doit devenir NotReady) :
+#    kubectl apply -f ai-agent/network-policies.yaml
+#    sleep 60 && kubectl -n monitoring get pods | grep -E "holmes|rag|bridge"
+#    # les 3 restent 1/1 Running -> probes OK
+#    # test négatif (doit ÉCHOUER — timeout) :
+#    kubectl -n online-boutique run np-test --rm -it --image=curlimages/curl \
+#      --restart=Never -- curl -m 5 http://postmortem-rag.monitoring:8100/healthz
+#  ROLLBACK immédiat si un composant devient NotReady :
+#    kubectl delete -f ai-agent/network-policies.yaml
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postmortem-rag-ingress
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: postmortem-rag
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - ipBlock:
+            cidr: 10.0.2.15/32        # kubelet (probes readiness)
+      ports:
+        - port: 8100
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: holmes-bridge-ingress
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: holmes-bridge
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - ipBlock:
+            cidr: 10.0.2.15/32        # kubelet (probes + scrape via nœud)
+      ports:
+        - port: 8000
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: holmesgpt-ingress
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: holmes   # ⚠️ vérifier avec --show-labels
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - ipBlock:
+            cidr: 10.0.2.15/32        # kubelet (probes) + port-forwards
+      ports:
+        - port: 5050
+          protocol: TCP

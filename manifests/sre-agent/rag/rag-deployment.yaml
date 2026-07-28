@@ -25,6 +25,10 @@ spec:
       labels:
         app: postmortem-rag
     spec:
+      # PriorityClass définie dans bridge-deployment.yaml (correctif N2) :
+      # le RAG survit à la pression du nœud (évincé le 28/07 pendant le
+      # memory-hog — ContainerStatusUnknown).
+      priorityClassName: sre-agent
       containers:
         - name: rag
           image: python:3.11-slim

@@ -36,6 +36,10 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
     spec:
+      # Correctif N2 : l'agent partage le mono-node avec les workloads sous
+      # chaos — cette priorité évite que bridge/RAG soient évincés les
+      # premiers sous pression (vécu le 28/07 pendant le memory-hog).
+      priorityClassName: sre-agent
       containers:
         - name: bridge
           image: python:3.11-slim
@@ -122,8 +126,12 @@ spec:
           secret:
             secretName: holmes-slack-webhook
         - name: state
-          emptyDir: {}   # dédup persistante : survit aux restarts du
-                         # conteneur (pas à la suppression du pod — assumé)
+          # Correctif F1 : PVC (local-path, provisioner par défaut de K3s)
+          # au lieu d'emptyDir — la dédup et la mémoire 24 h survivent
+          # désormais aux suppressions/recréations du pod (un restart
+          # pendant un orage d'alertes ne redéclenche plus de rafale).
+          persistentVolumeClaim:
+            claimName: holmes-bridge-state
         - name: grafana
           secret:
             secretName: grafana-agent-token
@@ -143,4 +151,28 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
+---
+# État persistant du bridge (dédup + mémoire des diagnostics 24 h).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: holmes-bridge-state
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path     # provisioner par défaut de K3s
+  resources:
+    requests:
+      storage: 100Mi
+---
+# Priorité d'ordonnancement des composants de l'agent : sous pression du
+# nœud (chaos, tempête de redémarrage), ils sont évincés en DERNIER —
+# l'enquêteur doit survivre à l'incident qu'il enquête.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: sre-agent
+value: 100000
+globalDefault: false
+description: "Composants de l'agent SRE (bridge, RAG) — évincés en dernier"
 

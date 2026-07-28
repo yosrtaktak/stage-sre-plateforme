@@ -144,15 +144,18 @@ toolsets:
       - name: search_similar_incidents
         description: >-
           Recherche les incidents passés les plus similaires à une description
-          de panne (symptômes, service, signature d'erreur). Retourne les
-          diagnostics/post-mortems correspondants avec leur score de
-          similarité — utile pour reconnaître une récidive et réutiliser le
-          remède qui avait fonctionné.
+          de panne (symptômes, service, signature d'erreur). À appeler dans
+          CHAQUE enquête (inspection obligatoire d du protocole). Retourne les
+          diagnostics/post-mortems avec leur score de similarité, les
+          post-mortems (cause confirmée après coup) classés en priorité.
+          Interprétation : score < 0,6 = sans rapport, à ignorer ; >= 0,7 =
+          récidive probable — vérifier si le remède passé s'applique encore
+          avant de le recommander.
         command: >-
           curl -s -X POST
           http://postmortem-rag.monitoring.svc.cluster.local:8100/search
           -H 'Content-Type: application/json'
-          -d '{"query": "{{ query }}", "k": 3}'
+          -d '{"query": "{{ query }}", "k": 5}'
         parameters:
           - name: query
             description: "Description de la panne recherchée (symptômes, service, erreur)"
@@ -192,3 +195,4 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
+

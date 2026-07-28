@@ -7,6 +7,8 @@ Loki) et la poste sur le canal Slack de l'agent.
 """
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 
 HOLMES_URL = os.environ.get(
@@ -33,11 +35,32 @@ Sois factuel : uniquement ce que tes outils retournent réellement."""
 
 def main():
     body = json.dumps({"ask": ASK, "model": HOLMES_MODEL}).encode()
-    req = urllib.request.Request(
-        f"{HOLMES_URL}/api/chat", data=body,
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=280) as r:
-        resp = json.loads(r.read())
+    resp = None
+    # Correctif F7 : sans retry, le digest du lundi était perdu au premier
+    # 429 du free tier (backoffLimit: 1 côté CronJob).
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            f"{HOLMES_URL}/api/chat", data=body,
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=280) as r:
+                resp = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode(errors="replace")[:300]
+            except Exception:
+                pass
+            transient = e.code == 429 or (e.code == 500 and
+                                          ("RateLimit" in detail
+                                           or "429" in detail))
+            if transient and attempt < 3:
+                print(f"[digest] quota LLM saturé (tentative {attempt}/3), "
+                      f"retry dans 75 s", flush=True)
+                time.sleep(75)
+                continue
+            raise
     text = resp.get("analysis") or resp.get("response") or json.dumps(resp)
 
     with open(SLACK_WEBHOOK_FILE) as f:
@@ -53,3 +76,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

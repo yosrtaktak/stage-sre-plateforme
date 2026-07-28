@@ -242,31 +242,47 @@ def resync(force=False):
                 _save()
 
 
+PM_BOOST = 0.05   # bonus de score des post-mortems : à similarité proche,
+                  # un document dont la cause a été CONFIRMÉE après coup
+                  # passe devant un simple diagnostic à chaud.
+
+
+def _rank(results, k):
+    return sorted(
+        results,
+        key=lambda d: d["score"] + (PM_BOOST if d.get("type") == "postmortem"
+                                    else 0.0),
+        reverse=True)[:k]
+
+
 def search(query, k=3):
     qv = _embed(query)
     k = max(1, min(int(k), 10))
+    fetch = min(k + 3, 10)     # sur-échantillonne pour laisser le boost agir
     if QDRANT_URL:
         try:
             res = _qdrant("POST",
                           f"/collections/{COLLECTION}/points/search",
-                          {"vector": qv, "limit": k, "with_payload": True})
-            return [{"title": p["payload"].get("title"),
-                     "date": p["payload"].get("date"),
-                     "verdict": p["payload"].get("verdict"),
-                     "tags": p["payload"].get("tags", []),
-                     "score": round(p.get("score", 0.0), 4),
-                     "text": (p["payload"].get("text") or "")[:2500]}
-                    for p in res.get("result", [])]
+                          {"vector": qv, "limit": fetch, "with_payload": True})
+            return _rank([{"title": p["payload"].get("title"),
+                           "date": p["payload"].get("date"),
+                           "type": p["payload"].get("type"),
+                           "verdict": p["payload"].get("verdict"),
+                           "tags": p["payload"].get("tags", []),
+                           "score": round(p.get("score", 0.0), 4),
+                           "text": (p["payload"].get("text") or "")[:2500]}
+                          for p in res.get("result", [])], k)
         except Exception as e:
             log(f"search qdrant KO, repli sur le cache local : {e}")
     with _lock:
-        scored = sorted(
-            ({"title": d["payload"]["title"], "date": d["payload"]["date"],
-              "verdict": d["payload"]["verdict"], "tags": d["payload"]["tags"],
-              "score": round(_cosine(qv, d["vec"]), 4),
-              "text": d["payload"]["text"][:2500]} for d in _cache["docs"]),
-            key=lambda d: d["score"], reverse=True)
-    return scored[:k]
+        scored = [{"title": d["payload"]["title"], "date": d["payload"]["date"],
+                   "type": d["payload"].get("type"),
+                   "verdict": d["payload"]["verdict"],
+                   "tags": d["payload"]["tags"],
+                   "score": round(_cosine(qv, d["vec"]), 4),
+                   "text": d["payload"]["text"][:2500]}
+                  for d in _cache["docs"]]
+    return _rank(scored, k)
 
 
 def all_payloads():
