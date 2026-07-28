@@ -1,0 +1,42 @@
+# =============================================================================
+#  Digest SRE hebdomadaire — l'agent rédige le rapport d'astreinte.
+#  Lundi 07:00 UTC. Script monté en ConfigMap :
+#    kubectl -n monitoring create configmap sre-digest-script \
+#      --from-file=ai-agent/digest/digest.py --dry-run=client -o yaml | kubectl apply -f -
+#  Test immédiat sans attendre lundi :
+#    kubectl -n monitoring create job --from=cronjob/sre-weekly-digest digest-test
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sre-weekly-digest
+  namespace: monitoring
+spec:
+  schedule: "0 7 * * 1"          # lundi 07:00 UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: digest
+              image: python:3.11-slim
+              command: ["python", "/app/digest.py"]
+              volumeMounts:
+                - { name: script, mountPath: /app, readOnly: true }
+                - { name: slack, mountPath: /etc/slack, readOnly: true }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { cpu: 100m, memory: 64Mi }
+          volumes:
+            - name: script
+              configMap:
+                name: sre-digest-script
+            - name: slack
+              secret:
+                secretName: holmes-slack-webhook

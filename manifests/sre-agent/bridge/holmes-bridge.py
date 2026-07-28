@@ -68,6 +68,48 @@ GRAFANA_TOKEN_FILE = os.environ.get(
 # génération double la capacité/minute avant de tomber sur Groq.
 FALLBACK_MODELS = [m.strip() for m in
                    os.environ.get("FALLBACK_MODEL", "").split(",") if m.strip()]
+# RAG post-mortems : chaque diagnostic/post-mortem publié est aussi poussé
+# vers l'index vectoriel (service postmortem-rag). Vide = désactivé.
+RAG_URL = os.environ.get("RAG_URL", "").strip()
+
+# Méta-observabilité : compteurs exposés en format Prometheus sur GET /metrics
+# (scrappés via les annotations prometheus.io/* du Deployment). L'agent
+# s'observe lui-même : enquêtes, skips par raison, 429, fallbacks, durées.
+_metrics = {
+    "investigations_posted": 0, "postmortems_posted": 0,
+    "skips_dedup": 0, "skips_cap": 0, "skips_postmortem_filter": 0,
+    "skips_synthetic": 0, "errors": 0, "quota_429": 0,
+    "fallback_switch": 0, "annotations_posted": 0,
+    "duration_sum": 0.0, "duration_count": 0,
+}
+
+
+def _metrics_text():
+    m = _metrics
+    lines = ["# Métriques du bridge holmes (agent SRE)"]
+    for k in ("investigations_posted", "postmortems_posted", "skips_dedup",
+              "skips_cap", "skips_postmortem_filter", "skips_synthetic",
+              "errors", "quota_429", "fallback_switch", "annotations_posted"):
+        lines.append(f"holmes_bridge_{k}_total {m[k]}")
+    lines.append(f"holmes_bridge_investigation_duration_seconds_sum {m['duration_sum']:.1f}")
+    lines.append(f"holmes_bridge_investigation_duration_seconds_count {m['duration_count']}")
+    return "\n".join(lines) + "\n"
+
+
+def _rag_add(title, text, tags):
+    """Alimente l'index vectoriel des incidents. No-op si RAG_URL est vide."""
+    if not RAG_URL:
+        return
+    try:
+        body = json.dumps({"title": title, "text": text[:8000],
+                           "tags": tags}).encode()
+        req = urllib.request.Request(
+            f"{RAG_URL}/add", data=body,
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=20)
+        log(f"rag: document indexé ({title})")
+    except Exception as e:
+        log(f"rag add error: {e}")
 
 _seen = {}           # fingerprint -> timestamp (persisté dans DEDUP_STATE_FILE)
 _hour_window = []    # timestamps des investigations lancées
@@ -149,6 +191,9 @@ la notification Slack), suivie d'une ligne vide. Puis structure ainsi :
    avec les VRAIS noms de ressources (ex. `deploy/paymentservice`, jamais un
    nom de pod recopié en nom de deployment). Si tu n'as pas la preuve qu'une
    action corrigera le problème, dis-le au lieu de la recommander.
+Termine par UNE ligne : « Confiance : haute|moyenne|basse — <ce qui pourrait
+falsifier ce diagnostic> » (haute = cause directement observée ; moyenne =
+déduite de mesures concordantes ; basse = hypothèse restante).
 Sois factuel : cite uniquement ce que tes outils ont réellement retourné."""
 
 PROMPT_POSTMORTEM = """Tu es l'agent SRE de la plateforme Online Boutique
@@ -179,6 +224,8 @@ Puis produis :
    c) Architecture (retry, timeout, isolation de dépendance).
 RÈGLE : chaque recommandation doit citer la preuve mesurée qui la motive ;
 une recommandation générique sans preuve est interdite — supprime-la.
+Termine par UNE ligne : « Confiance : haute|moyenne|basse — <ce qui pourrait
+falsifier cette analyse> ».
 Sois factuel : cite uniquement ce que tes outils ont réellement retourné."""
 
 
@@ -298,6 +345,7 @@ def grafana_annotate(text, tags):
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {token}"})
         urllib.request.urlopen(req, timeout=10)
+        _metrics["annotations_posted"] += 1
         log("grafana annotation posted")
     except Exception as e:
         log(f"grafana annotation error: {e}")
@@ -379,6 +427,7 @@ def _call_holmes(ask):
                 except Exception:
                     pass
                 if _is_quota_error(e.code, body):
+                    _metrics["quota_429"] += 1
                     if attempt < RETRY_MAX:
                         log(f"quota LLM saturé sur {model} (tentative "
                             f"{attempt}/{RETRY_MAX}), retry dans {RETRY_WAIT_S}s")
@@ -387,6 +436,7 @@ def _call_holmes(ask):
                     last_exc = e
                     idx = models.index(model)
                     if idx < len(models) - 1:
+                        _metrics["fallback_switch"] += 1
                         log(f"quota épuisé sur {model} -> bascule sur le "
                             f"modèle de secours {models[idx + 1]}")
                     break        # modèle suivant (ou abandon si dernier)
@@ -441,6 +491,16 @@ def investigate(alert, postmortem=False):
     grafana_annotate(
         f"{icon} {labels.get('alertname', '?')} — {verdict_line}",
         tags=[labels.get("alertname", "?"), labels.get("severity", "?")])
+    # RAG : le document rejoint l'index vectoriel des incidents.
+    when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _rag_add(
+        title=f"{icon} {labels.get('alertname', '?')} — {when}",
+        text=analysis,
+        tags=[labels.get("alertname", "?"), labels.get("slo", "?"),
+              labels.get("severity", "?"),
+              "postmortem" if postmortem else "diagnostic"])
+    _metrics["postmortems_posted" if postmortem
+             else "investigations_posted"] += 1
     log(f"{'postmortem' if postmortem else 'investigation'} posted "
         f"for {labels.get('alertname')}")
 
@@ -464,16 +524,24 @@ def handle(alerts):
         name = alert.get("labels", {}).get("alertname", "")
         if name == "Watchdog":
             continue
+        # Alertes de test explicitement taguées (recommandation émise par
+        # l'agent lui-même) : jamais d'enquête ni de post-mortem.
+        if alert.get("labels", {}).get("synthetic") == "true":
+            _metrics["skips_synthetic"] += 1
+            log(f"skip (alerte synthetic) : {name}")
+            continue
         # Anti-fatigue post-mortem (amélioration 5) : seuls les incidents
         # significatifs méritent un 📋 dans le canal.
         if postmortem:
             sev = alert.get("labels", {}).get("severity", "")
             if sev not in POSTMORTEM_SEVERITIES:
+                _metrics["skips_postmortem_filter"] += 1
                 log(f"skip post-mortem (sévérité {sev or '?'} hors "
                     f"{sorted(POSTMORTEM_SEVERITIES)}) : {name}")
                 continue
             dur = _incident_duration_s(alert)
             if dur is not None and dur < POSTMORTEM_MIN_S:
+                _metrics["skips_postmortem_filter"] += 1
                 log(f"skip post-mortem (durée {int(dur)}s < "
                     f"{POSTMORTEM_MIN_S}s) : {name}")
                 continue
@@ -486,9 +554,11 @@ def handle(alerts):
             while _hour_window and now - _hour_window[0] > 3600:
                 _hour_window.pop(0)
             if fp in _seen:
+                _metrics["skips_dedup"] += 1
                 log(f"skip (déjà investiguée) : {name}")
                 continue
             if len(_hour_window) >= MAX_PER_HOUR:
+                _metrics["skips_cap"] += 1
                 log(f"skip (plafond {MAX_PER_HOUR}/h atteint) : {name}")
                 continue
             _seen[fp] = now
@@ -500,9 +570,13 @@ def handle(alerts):
 
 def _safe_investigate(alert, postmortem=False):
     name = alert.get("labels", {}).get("alertname", "?")
+    t0 = time.time()
     try:
         investigate(alert, postmortem=postmortem)
+        _metrics["duration_sum"] += time.time() - t0
+        _metrics["duration_count"] += 1
     except Exception as e:
+        _metrics["errors"] += 1
         log(f"holmes error for {name}: {e}")
         if "429" in str(e) or "RateLimit" in str(e):
             slack_post(f"⏳ Quota LLM saturé : enquête sur *{name}* abandonnée "
@@ -529,7 +603,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(500)
         self.end_headers()
 
-    def do_GET(self):  # probes liveness/readiness
+    def do_GET(self):  # probes liveness/readiness + métriques Prometheus
+        if self.path == "/metrics":
+            body = _metrics_text().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200 if self.path == "/healthz" else 404)
         self.end_headers()
 
@@ -549,4 +631,3 @@ if __name__ == "__main__":
         f"grafana={'on' if os.path.exists(GRAFANA_TOKEN_FILE) else 'off'} "
         f"memoire={len(_diags)} diag(s)")
     ThreadingHTTPServer(("", 8000), Handler).serve_forever()
-

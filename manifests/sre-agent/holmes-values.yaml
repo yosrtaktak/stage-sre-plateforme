@@ -131,6 +131,58 @@ toolsets:
       api_url: http://grafana.monitoring.svc.cluster.local:80
       api_key: "{{ env.GRAFANA_API_KEY }}"
       grafana_datasource_uid: tempo
+  # RAG agentique : l'agent peut chercher les incidents passés similaires
+  # PENDANT son enquête (index vectoriel alimenté par le bridge — voir
+  # ai-agent/rag/). "Cette panne a-t-elle déjà eu lieu ? Quel remède avait
+  # fonctionné ?"
+  incidents/search:
+    enabled: true
+    description: "Recherche sémantique dans les incidents passés (diagnostics et post-mortems indexés)"
+    prerequisites:
+      - command: "curl --version"
+    tools:
+      - name: search_similar_incidents
+        description: >-
+          Recherche les incidents passés les plus similaires à une description
+          de panne (symptômes, service, signature d'erreur). Retourne les
+          diagnostics/post-mortems correspondants avec leur score de
+          similarité — utile pour reconnaître une récidive et réutiliser le
+          remède qui avait fonctionné.
+        command: >-
+          curl -s -X POST
+          http://postmortem-rag.monitoring.svc.cluster.local:8100/search
+          -H 'Content-Type: application/json'
+          -d '{"query": "{{ query }}", "k": 3}'
+        parameters:
+          - name: query
+            description: "Description de la panne recherchée (symptômes, service, erreur)"
+  # Kiali : la santé du mesh vue par le plan de contrôle — permet de VOIR
+  # directement un problème d'enrôlement ambient (au lieu de le déduire des
+  # codes gRPC). Auth anonymous (voir yosr.yaml kiali.auth.strategy).
+  kiali/mesh:
+    enabled: true
+    description: "Santé du mesh Istio ambient via l'API Kiali"
+    prerequisites:
+      - command: "curl --version"
+    tools:
+      - name: kiali_workload_health
+        description: >-
+          Santé des workloads d'un namespace vue par Kiali (statuts des
+          requêtes entrantes/sortantes par workload dans le mesh).
+        command: >-
+          curl -s "http://kiali.monitoring.svc.cluster.local:20001/kiali/api/namespaces/{{ namespace }}/health?type=workload&rateInterval=10m"
+        parameters:
+          - name: namespace
+            description: "Namespace à inspecter (ex. online-boutique)"
+      - name: kiali_istio_validations
+        description: >-
+          Problèmes de configuration Istio détectés par Kiali dans un
+          namespace (objets invalides, références cassées).
+        command: >-
+          curl -s "http://kiali.monitoring.svc.cluster.local:20001/kiali/api/istio/validations?namespaces={{ namespace }}"
+        parameters:
+          - name: namespace
+            description: "Namespace à inspecter"
 
 # Sobriété : le nœud est partagé avec toute la stack d'observabilité.
 resources:
@@ -140,4 +192,3 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
-

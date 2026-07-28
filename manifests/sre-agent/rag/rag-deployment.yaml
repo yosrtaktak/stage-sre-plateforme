@@ -1,0 +1,79 @@
+# =============================================================================
+#  postmortem-rag : base vectorielle des incidents (RAG agentique)
+# -----------------------------------------------------------------------------
+#  Le script est monté depuis un ConfigMap :
+#    kubectl -n monitoring create configmap postmortem-rag-script \
+#      --from-file=ai-agent/rag/postmortem-rag.py --dry-run=client -o yaml | kubectl apply -f -
+#  Alimenté automatiquement par le bridge (env RAG_URL) ; interrogé par
+#  HolmesGPT via le toolset custom "incidents/search" (holmes-values.yaml).
+#  Embeddings : API Gemini (même Secret holmes-llm que l'agent).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postmortem-rag
+  namespace: monitoring
+  labels:
+    app: postmortem-rag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postmortem-rag
+  template:
+    metadata:
+      labels:
+        app: postmortem-rag
+    spec:
+      containers:
+        - name: rag
+          image: python:3.11-slim
+          command: ["python", "/app/postmortem-rag.py"]
+          env:
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: holmes-llm
+                  key: GEMINI_API_KEY
+            # Vérifier la disponibilité du modèle d'embedding avec :
+            #   curl -H "x-goog-api-key: $KEY" \
+            #     https://generativelanguage.googleapis.com/v1beta/models | grep -i embed
+            - name: EMBED_MODEL
+              value: "gemini-embedding-001"
+            - name: INDEX_FILE
+              value: "/data/index.json"
+          ports:
+            - containerPort: 8100
+          volumeMounts:
+            - name: script
+              mountPath: /app
+              readOnly: true
+            - name: data          # index persisté (survit aux restarts du
+              mountPath: /data    # conteneur ; PVC possible en v2)
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8100 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 128Mi }
+      volumes:
+        - name: script
+          configMap:
+            name: postmortem-rag-script
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postmortem-rag
+  namespace: monitoring
+  labels:
+    app: postmortem-rag
+spec:
+  selector:
+    app: postmortem-rag
+  ports:
+    - port: 8100
+      targetPort: 8100

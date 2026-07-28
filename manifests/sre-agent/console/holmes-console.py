@@ -133,4 +133,3 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"[console] http://localhost:{PORT} -> {HOLMES_URL}/api/chat", flush=True)
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
-
