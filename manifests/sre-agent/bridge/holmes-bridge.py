@@ -96,13 +96,15 @@ def _metrics_text():
     return "\n".join(lines) + "\n"
 
 
-def _rag_add(title, text, tags):
-    """Alimente l'index vectoriel des incidents. No-op si RAG_URL est vide."""
+def _rag_add(title, text, tags, meta=None):
+    """Alimente l'index vectoriel des incidents. No-op si RAG_URL est vide.
+    `meta` = champs structurés (date, alert, severity, slo, type, verdict)
+    stockés tels quels dans le payload Qdrant — post-mortems lisibles en base."""
     if not RAG_URL:
         return
     try:
         body = json.dumps({"title": title, "text": text[:8000],
-                           "tags": tags}).encode()
+                           "tags": tags, "meta": meta or {}}).encode()
         req = urllib.request.Request(
             f"{RAG_URL}/add", data=body,
             headers={"Content-Type": "application/json"})
@@ -498,7 +500,13 @@ def investigate(alert, postmortem=False):
         text=analysis,
         tags=[labels.get("alertname", "?"), labels.get("slo", "?"),
               labels.get("severity", "?"),
-              "postmortem" if postmortem else "diagnostic"])
+              "postmortem" if postmortem else "diagnostic"],
+        meta={"date": when,
+              "alert": labels.get("alertname", "?"),
+              "severity": labels.get("severity", "?"),
+              "slo": labels.get("slo", "?"),
+              "type": "postmortem" if postmortem else "diagnostic",
+              "verdict": verdict_line[:300]})
     _metrics["postmortems_posted" if postmortem
              else "investigations_posted"] += 1
     log(f"{'postmortem' if postmortem else 'investigation'} posted "
@@ -631,3 +639,4 @@ if __name__ == "__main__":
         f"grafana={'on' if os.path.exists(GRAFANA_TOKEN_FILE) else 'off'} "
         f"memoire={len(_diags)} diag(s)")
     ThreadingHTTPServer(("", 8000), Handler).serve_forever()
+

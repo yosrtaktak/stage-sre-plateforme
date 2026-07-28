@@ -40,6 +40,30 @@ spec:
             #     https://generativelanguage.googleapis.com/v1beta/models | grep -i embed
             - name: EMBED_MODEL
               value: "gemini-embedding-001"
+            # v2 — stockage Qdrant Cloud (free tier 1 Go, REST pur).
+            # Secret à créer depuis cloud.qdrant.io (URL du cluster + clé) :
+            #   kubectl -n monitoring create secret generic qdrant-cloud \
+            #     --from-literal=url='https://xxx.cloud.qdrant.io:6333' \
+            #     --from-literal=api-key='...'
+            # Sans ce Secret (optional: true) : mode local v1, index en cache.
+            - name: QDRANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: qdrant-cloud
+                  key: url
+                  optional: true
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: qdrant-cloud
+                  key: api-key
+                  optional: true
+            - name: COLLECTION
+              value: "incidents"
+            # Cache write-through + file d'attente resync (emptyDir) ;
+            # INDEX_FILE reste lu au 1er démarrage pour migrer l'index v1.
+            - name: CACHE_FILE
+              value: "/data/cache.json"
             - name: INDEX_FILE
               value: "/data/index.json"
           ports:
@@ -77,3 +101,4 @@ spec:
   ports:
     - port: 8100
       targetPort: 8100
+
