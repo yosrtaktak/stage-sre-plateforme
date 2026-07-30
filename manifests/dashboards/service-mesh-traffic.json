@@ -187,7 +187,7 @@
           "refId": "A"
         }
       ],
-      "title": "Request Rate",
+      "title": "Request Rate (TEST GITOPS)",
       "type": "stat",
       "description": "Débit total de requêtes L7 (req/s) vu par le waypoint sur le namespace — le pouls du trafic."
     },
