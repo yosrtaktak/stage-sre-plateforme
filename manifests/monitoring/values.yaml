@@ -164,7 +164,7 @@ prometheus:
         - name: holmes-bridge
           webhook_configs:
             - url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
-              send_resolved: true   # passer à true pour activer le post-mortem
+              send_resolved: false   # passer à true pour activer le post-mortem
                                      # (avec POSTMORTEM_ENABLED=true côté bridge)
               max_alerts: 5          # borne la taille du payload groupé
         - name: default
@@ -472,7 +472,7 @@ prometheus:
               annotations:
                 summary: Checkout Success Rate en burn rapide
                 description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le parcours achat (checkout/payment/shipping) est en échec depuis plus de 1 minute — impact direct sur le revenu.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: CheckoutSlowBurn
               expr: slo:checkout_success:burnrate30m > 6 and slo:checkout_success:burnrate6h > 6
@@ -483,7 +483,7 @@ prometheus:
               annotations:
                 summary: Checkout Success Rate en dégradation lente
                 description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h — surveiller avant que ça devienne critique.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # `for: 1m` : même calibration chaos que CheckoutFastBurn (EXP 2 run B,
             # pod-delete 100 % de 300 s — la panne est intermittente, kill toutes
@@ -497,7 +497,7 @@ prometheus:
               annotations:
                 summary: Frontend Availability en burn rapide
                 description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le point d''entrée principal du site est en échec depuis plus de 1 minute — tous les utilisateurs sont potentiellement impactés.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: FrontendSlowBurn
               expr: slo:frontend_availability:burnrate30m > 6 and slo:frontend_availability:burnrate6h > 6
@@ -508,7 +508,7 @@ prometheus:
               annotations:
                 summary: Frontend Availability en dégradation lente
                 description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # REMPLACE l'ancienne alerte ProductCatalogDegraded (seuil simple
             # sli < 0.99 pendant 5m) par le pattern multi-window multi-burn-rate,
@@ -523,7 +523,7 @@ prometheus:
               annotations:
                 summary: Product Catalog en burn rapide
                 description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le service productcatalogservice est en échec depuis plus de 1 minute — impact direct sur la navigation et le catalogue produit.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: ProductCatalogSlowBurn
               expr: slo:productcatalog_availability:burnrate30m > 6 and slo:productcatalog_availability:burnrate6h > 6
@@ -534,7 +534,7 @@ prometheus:
               annotations:
                 summary: Product Catalog en dégradation lente
                 description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h — vérifier les logs et les redémarrages récents avant que ça devienne critique.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # REMPLACE l'ancienne alerte CartDegraded (seuil simple sli < 0.99
             # pendant 5m) par le même pattern multi-window multi-burn-rate.
@@ -547,7 +547,7 @@ prometheus:
               annotations:
                 summary: Cart en burn rapide
                 description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le service cartservice est en échec depuis plus de 1 minute — impact direct sur le panier et donc le funnel d''achat, possible panne redis-cart en amont.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: CartSlowBurn
               expr: slo:cart_availability:burnrate30m > 6 and slo:cart_availability:burnrate6h > 6
@@ -558,7 +558,7 @@ prometheus:
               annotations:
                 summary: Cart en dégradation lente
                 description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive détectée sur 30m et 6h — vérifier redis-cart en amont.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # RÉINTRODUITES (complément des Fast/SlowBurn) pour la couverture
             # des EXP chaos 1 et 7 : sur un SLO à 99 % (budget 1 %), le fast-burn
@@ -576,7 +576,7 @@ prometheus:
               annotations:
                 summary: Product Catalog dégradé (SLI < 99 %)
                 description: 'Taux de succès actuel (5m) = {{ $value | humanizePercentage }} (seuil : 99 %). Le service productcatalogservice échoue par intermittence depuis plus de 5 minutes — vérifier l''état des pods (redémarrages, kills) et la navigation catalogue.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: CartDegraded
               expr: sli:cart_availability:ratio5m < 0.99
@@ -587,7 +587,7 @@ prometheus:
               annotations:
                 summary: Cart dégradé (SLI < 99 %)
                 description: 'Taux de succès actuel (5m) = {{ $value | humanizePercentage }} (seuil : 99 %). Le service cartservice échoue depuis plus de 5 minutes — possible panne redis-cart en amont (dépendance non instrumentable, détection via le SLI du consommateur).'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # --- Parcours utilisateur (SLO composite 99,5 %) -------------------
             # Même pattern que le reste du fichier (multi-burn-rate + seuil
@@ -605,7 +605,7 @@ prometheus:
               annotations:
                 summary: Parcours utilisateur en burn rapide
                 description: 'Burn rate actuel (5m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil critique: 14.4x). Le parcours composite (frontend → catalogue → panier → checkout) est en échec — dégradation bout-en-bout de l''expérience utilisateur. SLI approché par produit des 4 maillons (voir recording rule).'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: UserJourneySlowBurn
               expr: slo:user_journey_success:burnrate30m > 6 and slo:user_journey_success:burnrate6h > 6
@@ -616,7 +616,7 @@ prometheus:
               annotations:
                 summary: Parcours utilisateur en dégradation lente
                 description: 'Burn rate actuel (30m) = {{ $value | printf "%.1f" }}x le taux tolérable (seuil: 6x). Dégradation progressive du parcours composite sur 30m et 6h — identifier le maillon en cause via les burn rates par service.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: UserJourneyDegraded
               expr: sli:user_journey_success:ratio5m < 0.995
@@ -627,7 +627,7 @@ prometheus:
               annotations:
                 summary: Parcours utilisateur dégradé (SLI < 99,5 %)
                 description: 'Taux de succès composite actuel (5m) = {{ $value | humanizePercentage }} (SLO : 99,5 %). Un des 4 maillons du parcours (frontend/catalogue/panier/checkout) se dégrade depuis plus de 5 minutes — comparer les SLI par service pour isoler le maillon.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             - alert: PodRestartingFrequently
               expr: increase(kube_pod_container_status_restarts_total{namespace="online-boutique"}[15m]) > 2
@@ -638,7 +638,7 @@ prometheus:
               annotations:
                 summary: 'Pod {{ $labels.pod }} a redémarré récemment'
                 description: '{{ $value | printf "%.0f" }} redémarrage(s) détecté(s) sur le pod {{ $labels.pod }} (conteneur {{ $labels.container }}) dans les 15 dernières minutes — vérifier OOM/liveness probe.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # `for: 2m` (au lieu de 5m) : l'EXP 4 (network-latency +2 s) dure 300 s
             # dont ~4 min d'injection réelle. Le P99 sur fenêtre [5m] met déjà
@@ -655,7 +655,7 @@ prometheus:
               annotations:
                 summary: Latence P99 checkout > 1s
                 description: 'P99 actuel = {{ $value | printf "%.0f" }} ms (seuil : 1000 ms).'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
             # AJOUT : comble l'angle mort documenté à l'EXP 5 — le frontend
             # peut ralentir (throttling CPU sous limite stricte) sans produire
@@ -671,7 +671,7 @@ prometheus:
               annotations:
                 summary: Latence P99 frontend > 800 ms
                 description: 'P99 actuel = {{ $value | printf "%.0f" }} ms (seuil : 800 ms) — expérience utilisateur dégradée sur le point d''entrée sans erreurs visibles ; possible famine CPU (throttling) : vérifier le panel CPU Usage per Pod.'
-                runbook_url: http://10.0.2.15:32000/d/executive-sre-boutique
+                runbook_url: http://127.0.0.1:32000/d/executive-sre-boutique-v3
 
         - name: meta_monitoring
           rules:
@@ -816,6 +816,14 @@ grafana:
   # ⚠️  À déplacer dans un Secret pour la prod : voir README (admin.existingSecret).
   adminPassword: admin123
 
+  # Infinity : requis par les panels 941/961 (table des alertes Alertmanager).
+  # Le datasource « alertmanager » natif de Grafana ne peut PAS alimenter un
+  # panel : sa méthode query() renvoie toujours des données vides (il ne sert
+  # qu'à l'UI d'Alerting). Infinity interroge l'API REST /api/v2/alerts.
+  # Téléchargé au démarrage du pod (nécessite l'accès internet du nœud).
+  plugins:
+    - yesoreyeram-infinity-datasource
+
   datasources:
     datasources.yaml:
       apiVersion: 1
@@ -825,6 +833,26 @@ grafana:
           uid: prometheus
           url: http://obs-prometheus-server.monitoring.svc.cluster.local
           isDefault: true
+          access: proxy
+        # Intègre l'Alertmanager externe à l'UI d'Alerting de Grafana
+        # (silences, alertes en cours). NE PEUT PAS alimenter un panel (le
+        # plugin natif ne supporte pas les requêtes de données) — les panels
+        # 941/961 passent par Infinity ci-dessous. Nécessite
+        # unified_alerting.enabled=true. Vérifier le nom du service :
+        #   kubectl get svc -n monitoring | grep -i alertmanager
+        - name: Alertmanager
+          type: alertmanager
+          uid: alertmanager
+          url: http://obs-alertmanager.monitoring.svc.cluster.local:9093
+          access: proxy
+          jsonData:
+            implementation: prometheus
+            handleGrafanaManagedAlerts: false
+        # Source des panels 941/961 : requêtes JSON vers l'API REST
+        # d'Alertmanager (l'URL est portée par chaque requête de panel).
+        - name: Infinity
+          type: yesoreyeram-infinity-datasource
+          uid: infinity
           access: proxy
         - name: Loki
           type: loki
@@ -910,8 +938,15 @@ grafana:
   grafana.ini:
     panels:
       disable_sanitize_html: true
+    # RÉACTIVÉ le 29/07/2026 : le datasource Alertmanager (panels 941/961 des
+    # dashboards v3) fait partie du sous-système unified alerting — désactivé,
+    # le plugin n'est pas chargé ("plugin unavailable", panels en "datasource
+    # not found", health check failed). Le pipeline d'alerting reste 100 %
+    # Prometheus/Alertmanager : handleGrafanaManagedAlerts=false sur le
+    # datasource empêche Grafana d'y pousser ses propres alertes, et aucune
+    # règle d'alerte Grafana n'est définie.
     unified_alerting:
-      enabled: false
+      enabled: true
 
   env:
     GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/istio/istio-mesh.json

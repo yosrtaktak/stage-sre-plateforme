@@ -179,6 +179,9 @@ def _payload(title, text, tags, meta):
         "severity": m.get("severity")
                     or next((t for t in tags if t in SEVERITIES), ""),
         "slo": m.get("slo", ""),
+        # Correctif G3 : confiance auto-déclarée par l'agent (haute/moyenne/
+        # basse) — utilisée comme malus de ranking (anti auto-empoisonnement).
+        "confidence": m.get("confidence", ""),
         "verdict": (m.get("verdict") or first)[:300],
         "tags": tags,
         "text": text,
@@ -189,9 +192,22 @@ def _payload(title, text, tags, meta):
 def add_doc(title, text, tags, meta=None):
     """Write-through : cache local d'abord, puis Qdrant ; en échec Qdrant le
     doc est mis en file (pending) et rejoué au prochain resync."""
-    vec = _embed(f"{title}\n{text}")
     pid = _doc_id(title)
     payload = _payload(title, text, tags, meta)
+    try:
+        vec = _embed(f"{title}\n{text}")
+    except Exception as e:
+        # Correctif A1 (audit 29/07) : quota embeddings saturé -> le document
+        # était PERDU (la file pending ne couvrait que les échecs Qdrant).
+        # Désormais : conservé sans vecteur, embeddé au prochain resync().
+        log(f"embedding KO, doc conservé sans vecteur (embeddé au resync) : {e}")
+        with _lock:
+            _cache["docs"] = [d for d in _cache["docs"] if d["id"] != pid]
+            _cache["docs"].append({"id": pid, "payload": payload, "vec": None})
+            if pid not in _cache["pending"]:
+                _cache["pending"].append(pid)
+            _save()
+        return True
     queued = False
     with _lock:
         _cache["docs"] = [d for d in _cache["docs"] if d["id"] != pid]
@@ -230,6 +246,12 @@ def resync(force=False):
         d = docs.get(pid)
         try:
             if d:
+                if d.get("vec") is None:
+                    # Correctif A1 : embedding différé (quota saturé au /add).
+                    d["vec"] = _embed(f"{d['payload']['title']}\n"
+                                      f"{d['payload']['text']}")
+                    with _lock:
+                        _save()
                 _ensure_collection(len(d["vec"]))
                 _upsert(pid, d["vec"], d["payload"])
                 log(f"resync ok : {d['payload']['title']}")
@@ -245,19 +267,54 @@ def resync(force=False):
 PM_BOOST = 0.05   # bonus de score des post-mortems : à similarité proche,
                   # un document dont la cause a été CONFIRMÉE après coup
                   # passe devant un simple diagnostic à chaud.
+LOWCONF_MALUS = 0.05   # G3 : un diagnostic auto-déclaré "confiance basse"
+                       # recule au ranking (symétrique du boost post-mortem).
 
 
 def _rank(results, k):
     return sorted(
         results,
-        key=lambda d: d["score"] + (PM_BOOST if d.get("type") == "postmortem"
-                                    else 0.0),
+        key=lambda d: (d["score"]
+                       + (PM_BOOST if d.get("type") == "postmortem" else 0.0)
+                       - (LOWCONF_MALUS if d.get("confidence") == "basse"
+                          else 0.0)),
         reverse=True)[:k]
 
 
+def _lexical(query, k):
+    """Correctif A2 (audit 29/07) : repli SANS embeddings quand le quota
+    Gemini est saturé — score par recouvrement de mots-clés sur le cache
+    local. Dégradé, mais l'outil de l'agent ne répond plus jamais 500."""
+    words = set(re.findall(r"\w{3,}", query.lower()))
+    if not words:
+        return []
+    scored = []
+    with _lock:
+        for d in _cache["docs"]:
+            p = d["payload"]
+            hay = " ".join([p.get("title", ""), p.get("verdict", ""),
+                            " ".join(p.get("tags", [])),
+                            (p.get("text") or "")[:1500]]).lower()
+            hits = sum(1 for w in words if w in hay)
+            if hits:
+                scored.append({"title": p.get("title"), "date": p.get("date"),
+                               "type": p.get("type"),
+                               "confidence": p.get("confidence"),
+                               "verdict": p.get("verdict"),
+                               "tags": p.get("tags", []),
+                               "score": round(hits / len(words), 4),
+                               "lexical": True,
+                               "text": (p.get("text") or "")[:2500]})
+    return _rank(scored, k)
+
+
 def search(query, k=3):
-    qv = _embed(query)
     k = max(1, min(int(k), 10))
+    try:
+        qv = _embed(query)
+    except Exception as e:
+        log(f"embedding KO, recherche lexicale de secours : {e}")
+        return _lexical(query, k)
     fetch = min(k + 3, 10)     # sur-échantillonne pour laisser le boost agir
     if QDRANT_URL:
         try:
@@ -267,6 +324,7 @@ def search(query, k=3):
             return _rank([{"title": p["payload"].get("title"),
                            "date": p["payload"].get("date"),
                            "type": p["payload"].get("type"),
+                           "confidence": p["payload"].get("confidence"),
                            "verdict": p["payload"].get("verdict"),
                            "tags": p["payload"].get("tags", []),
                            "score": round(p.get("score", 0.0), 4),
@@ -277,11 +335,13 @@ def search(query, k=3):
     with _lock:
         scored = [{"title": d["payload"]["title"], "date": d["payload"]["date"],
                    "type": d["payload"].get("type"),
+                   "confidence": d["payload"].get("confidence"),
                    "verdict": d["payload"]["verdict"],
                    "tags": d["payload"]["tags"],
                    "score": round(_cosine(qv, d["vec"]), 4),
                    "text": d["payload"]["text"][:2500]}
-                  for d in _cache["docs"]]
+                  for d in _cache["docs"] if d.get("vec")]   # A1 : sans
+                  # vecteur (embedding différé), pas de cosinus possible
     return _rank(scored, k)
 
 

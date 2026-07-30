@@ -19,6 +19,25 @@
         },
         "enable": true,
         "hide": false,
+        "iconColor": "orange",
+        "name": "🤖 Agent SRE (verdicts)",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [
+            "sre-agent"
+          ],
+          "type": "tags"
+        },
+        "type": "tags"
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
         "iconColor": "purple",
         "name": "🧪 Chaos Experiments",
         "target": {
@@ -157,15 +176,6 @@
         "refresh": 2,
         "sort": 1,
         "type": "query"
-      },
-      {
-        "current": {},
-        "label": "Alertmanager",
-        "name": "DS_ALERTMANAGER",
-        "options": [],
-        "query": "alertmanager",
-        "refresh": 1,
-        "type": "datasource"
       }
     ]
   },
@@ -2528,6 +2538,285 @@
         "x": 0,
         "y": 51
       },
+      "id": 7,
+      "panels": [],
+      "title": "🤖 Agent SRE IA — Fiabilité des diagnostics (C1 · confidence drift)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "C1 — Chaque diagnostic/post-mortem se termine par une ligne « Confiance : haute|moyenne|basse » ; le bridge la parse et l'exporte (holmes_bridge_confidence_total). Lecture : une hausse des « basse » = mode de panne inédit ou toolsets insuffisants ; la remontée des « haute » après l'indexation du post-mortem/runbook prouve que le système apprend. Compteur en mémoire du pod : increase() absorbe les resets au restart.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "haute"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "moyenne"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "basse"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "id": 70,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (level) (increase(holmes_bridge_confidence_total[1d]))",
+          "legendFormat": "{{level}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Enquêtes par niveau de confiance (fenêtre glissante 24 h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "C1 — Part des enquêtes auto-déclarées « confiance haute » sur 7 jours (haute = cause directement observée). C'est LA courbe de la soutenance : elle doit monter à mesure que la mémoire d'incidents s'enrichit. Sans enquête sur la fenêtre : « pas encore d'enquête ».",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit",
+          "mappings": [],
+          "noValue": "pas encore d'enquête",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.7
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 52
+      },
+      "id": 71,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(increase(holmes_bridge_confidence_total{level=\"haute\"}[7d])) / sum(increase(holmes_bridge_confidence_total[7d]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Part « confiance haute » (7 j)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "C1 — Nombre d'enquêtes « confiance basse » sur 7 jours (basse = hypothèse restante). Chaque occurrence est un signal d'amélioration : mode de panne absent de la mémoire, ou toolset manquant — à traiter comme un item de backlog (cf. correctif de prompt du 29/07). Le RAG pénalise déjà ces documents au ranking (anti auto-empoisonnement).",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "unit": "short",
+          "mappings": [],
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 52
+      },
+      "id": 72,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(increase(holmes_bridge_confidence_total{level=\"basse\"}[7d]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Enquêtes « basse » (7 j)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
       "id": 6,
       "panels": [],
       "title": "🛠️ Troubleshooting & Liens",
@@ -2543,7 +2832,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "id": 60,
       "options": {
@@ -2568,7 +2857,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 66
       },
       "panels": []
     },
@@ -2576,35 +2865,117 @@
       "id": 961,
       "type": "table",
       "title": "Alertes vues par Alertmanager (actives + inhibées)",
-      "description": "Ce que Slack reçoit (active) et ce qui est volontairement tu (suppressed = inhibitions anti-doublons). Diffère de la métrique ALERTS de Prometheus, qui ignore les inhibitions. Nécessite le datasource Alertmanager (voir README).",
+      "description": "Ce que Slack reçoit (active) et ce qui est volontairement tu (suppressed = inhibitions anti-doublons). Diffère de la métrique ALERTS de Prometheus, qui ignore les inhibitions. Via le datasource Infinity (API REST /api/v2/alerts) — le datasource Alertmanager natif ne peut pas alimenter un panel (voir README).",
       "datasource": {
-        "type": "alertmanager",
-        "uid": "${DS_ALERTMANAGER}"
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "infinity"
       },
       "gridPos": {
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 67
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "custom": {}
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "État"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "active": {
+                        "text": "active → notifiée Slack",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "suppressed": {
+                        "text": "suppressed → inhibée/silencée",
+                        "color": "orange",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "options": {
-        "showHeader": true
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "État",
+            "desc": false
+          }
+        ]
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
-            "type": "alertmanager",
-            "uid": "${DS_ALERTMANAGER}"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
           },
-          "filters": ""
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://obs-alertmanager.monitoring.svc.cluster.local:9093/api/v2/alerts?active=true&silenced=true&inhibited=true",
+          "url_options": {
+            "method": "GET",
+            "data": ""
+          },
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "labels.alertname",
+              "text": "Alerte",
+              "type": "string"
+            },
+            {
+              "selector": "labels.severity",
+              "text": "Sévérité",
+              "type": "string"
+            },
+            {
+              "selector": "labels.slo",
+              "text": "SLO",
+              "type": "string"
+            },
+            {
+              "selector": "status.state",
+              "text": "État",
+              "type": "string"
+            },
+            {
+              "selector": "status.inhibitedBy",
+              "text": "Inhibée par (fingerprint)",
+              "type": "string"
+            },
+            {
+              "selector": "startsAt",
+              "text": "Depuis",
+              "type": "timestamp"
+            }
+          ]
         }
       ]
     }

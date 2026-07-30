@@ -19,6 +19,25 @@
         },
         "enable": true,
         "hide": false,
+        "iconColor": "orange",
+        "name": "🤖 Agent SRE (verdicts)",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [
+            "sre-agent"
+          ],
+          "type": "tags"
+        },
+        "type": "tags"
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
         "iconColor": "purple",
         "name": "🧪 Chaos Experiments",
         "target": {
