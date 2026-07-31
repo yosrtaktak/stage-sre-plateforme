@@ -1107,6 +1107,8 @@ otelAgent:
 kiali:
   auth:
     strategy: anonymous
+  login_token:
+    signing_key: "cGYSLoa1ZOwFmGu5VeIkZxrY2qHpnO6I"
   deployment:
     service_type: NodePort
   server:
