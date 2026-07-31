@@ -1,0 +1,18 @@
+name: validate-manifests
+on:
+  pull_request:
+    paths: ["manifests/app/**"]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+      - name: kustomize build
+        run: |
+          kubectl kustomize manifests/app > /tmp/app.yaml
+      - name: kubeconform
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary /tmp/app.yaml
