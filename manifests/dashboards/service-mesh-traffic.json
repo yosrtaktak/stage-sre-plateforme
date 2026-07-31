@@ -44,6 +44,25 @@
         "tagKeys": "chaosengine",
         "titleFormat": "Chaos actif",
         "useValueForTime": false
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "green",
+        "name": "🚀 Déploiements (GitOps)",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [
+            "deploy"
+          ],
+          "type": "tags"
+        },
+        "type": "tags"
       }
     ]
   },
