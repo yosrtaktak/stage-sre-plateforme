@@ -45,10 +45,19 @@ prometheus:
     resources:
       requests:
         memory: 256Mi
-        cpu: 100m
+        cpu: 250m
       limits:
         memory: 512Mi
-        cpu: 300m
+        cpu: 750m
+    startupProbe:
+      enabled: true
+      httpGet:
+        path: /-/healthy
+        port: 9090
+        scheme: HTTP
+      periodSeconds: 15
+      failureThreshold: 20
+      timeoutSeconds: 10
     service:
       type: ClusterIP
     # CORRECTION : le collector OTel pousse les métriques via `prometheusremotewrite`
