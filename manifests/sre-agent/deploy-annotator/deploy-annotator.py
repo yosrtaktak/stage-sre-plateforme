@@ -1,41 +1,61 @@
 #!/usr/bin/env python3
 """
 deploy-annotator.py — B0 : traçabilité incident → commit
-Pour chaque Application Argo CD :
-  1. Lit operationState.syncResult.revision
-  2. Compare au dernier hash connu (état persistant)
-  3. Si nouveau sync : annotation Grafana + écriture du contexte pour le bridge
-Aucun droit d'écriture sur le cluster — lecture seule (kubectl get uniquement).
+Interroge l'API Kubernetes directement en HTTPS (ServiceAccount token),
+sans dépendance à kubectl — cohérent avec le reste du système (stdlib pur).
 """
 import json
-import subprocess
 import urllib.request
 import urllib.error
+import ssl
 import os
 import sys
 
 APPS = ["dashboards", "online-boutique", "monitoring"]
 STATE_FILE = "/state/deploy-tracking.json"
-CONTEXT_FILE = "/state/last-deploys.json"  # lu par le bridge
+CONTEXT_FILE = "/state/last-deploys.json"
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "").rstrip("/")
 GRAFANA_TOKEN = os.environ.get("GRAFANA_TOKEN", "")
-REPO_DIR = os.environ.get("REPO_DIR", "/repo")  # clone local en lecture seule
+
+GITHUB_API = "https://api.github.com"
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "yosrtaktak/stage-sre-plateforme")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+K8S_API = "https://kubernetes.default.svc"
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
 def log(msg):
     print(f"[deploy-annotator] {msg}", file=sys.stderr)
 
 
+def k8s_get(path):
+    with open(f"{SA_DIR}/token") as f:
+        token = f.read().strip()
+    ctx = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+    req = urllib.request.Request(
+        f"{K8S_API}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def github_get(path):
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    req = urllib.request.Request(f"{GITHUB_API}{path}", headers=headers)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 def get_app_sync_state(app):
     try:
-        out = subprocess.run(
-            ["kubectl", "get", "application", app, "-n", "argocd", "-o", "json"],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-    except subprocess.CalledProcessError as e:
-        log(f"kubectl error for {app}: {e.stderr}")
+        d = k8s_get(f"/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/{app}")
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        log(f"API error for {app}: {e}")
         return None
-    d = json.loads(out.stdout)
     op = d.get("status", {}).get("operationState", {}) or {}
     sync_result = op.get("syncResult", {}) or {}
     return {
@@ -59,52 +79,41 @@ def save_json_atomic(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
-    os.replace(tmp, path)  # écriture atomique
+    os.replace(tmp, path)
 
 
 def get_changed_files(old_rev, new_rev):
     if not old_rev or old_rev == new_rev:
         return []
     try:
-        out = subprocess.run(
-            ["git", "-C", REPO_DIR, "diff", "--name-only", old_rev, new_rev],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        return [line for line in out.stdout.splitlines() if line.strip()]
-    except subprocess.CalledProcessError as e:
-        log(f"git diff error: {e.stderr}")
+        d = github_get(f"/repos/{GITHUB_REPO}/compare/{old_rev}...{new_rev}")
+        return [f["filename"] for f in d.get("files", [])]
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        log(f"GitHub compare error: {e}")
         return []
 
 
 def get_commit_message(rev):
     try:
-        out = subprocess.run(
-            ["git", "-C", REPO_DIR, "log", "-1", "--pretty=%s", rev],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        return out.stdout.strip()
-    except subprocess.CalledProcessError:
+        d = github_get(f"/repos/{GITHUB_REPO}/commits/{rev}")
+        return d.get("commit", {}).get("message", "").splitlines()[0] if d.get("commit", {}).get("message") else ""
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        log(f"GitHub commit error: {e}")
         return ""
 
 
 def post_grafana_annotation(app, revision, files, message):
     if not GRAFANA_URL or not GRAFANA_TOKEN:
-        log("Grafana non configuré (GRAFANA_URL/GRAFANA_TOKEN absents) — skip annotation")
+        log("Grafana non configuré — skip annotation")
         return
     text = f"🚀 Sync {app} → {revision[:8]} — {message}"
     if files:
         text += f" ({len(files)} fichier(s): {', '.join(files[:5])}{'...' if len(files) > 5 else ''})"
-    payload = json.dumps({
-        "text": text,
-        "tags": ["deploy", app],
-    }).encode()
+    payload = json.dumps({"text": text, "tags": ["deploy", app]}).encode()
     req = urllib.request.Request(
         f"{GRAFANA_URL}/api/annotations",
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {GRAFANA_TOKEN}",
-        },
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {GRAFANA_TOKEN}"},
         method="POST",
     )
     try:
@@ -133,7 +142,6 @@ def main():
 
             post_grafana_annotation(app, new_rev, files, message)
 
-            # Contexte pour le bridge — jamais l'auteur, uniquement le commit (no-blame)
             context[app] = {
                 "git_commit": new_rev,
                 "git_repo_paths": files,

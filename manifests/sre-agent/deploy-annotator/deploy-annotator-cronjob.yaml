@@ -1,12 +1,3 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: deploy-annotator-script
-  namespace: monitoring
-data:
-  deploy-annotator.py: |
-PYCONTENT_PLACEHOLDER
----
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -21,6 +12,44 @@ spec:
       template:
         spec:
           serviceAccountName: deploy-annotator
+          restartPolicy: OnFailure
+          initContainers:
+            - name: git-clone
+              image: alpine/git:latest
+              command:
+                - sh
+                - -c
+                - |
+                  apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1
+                  python3 /scripts/deploy-annotator.py
+                  URL="https://${GIT_USER}:${GIT_TOKEN}@github.com/yosrtaktak/stage-sre-plateforme"
+                  if [ -d /repo/.git ]; then
+                    git -C /repo fetch --depth=50 "$URL" stage-yosr
+                    git -C /repo reset --hard FETCH_HEAD
+                  else
+                    git clone --depth=50 --branch stage-yosr "$URL" /repo
+                  fi
+              env:
+                - name: GITHUB_REPO
+                  value: "yosrtaktak/stage-sre-plateforme" 
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: repo-stage-sre
+                      key: password
+                - name: GIT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: deploy-annotator-git
+                      key: username
+                - name: GIT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: deploy-annotator-git
+                      key: token
+              volumeMounts:
+                - name: repo
+                  mountPath: /repo
           containers:
             - name: deploy-annotator
               image: python:3.11-slim
@@ -43,23 +72,6 @@ spec:
                   mountPath: /state
                 - name: repo
                   mountPath: /repo
-          initContainers:
-            - name: git-clone
-              image: alpine/git:latest
-              command:
-                - sh
-                - -c
-                - |
-                  if [ -d /repo/.git ]; then
-                    git -C /repo fetch --depth=50 origin stage-yosr
-                    git -C /repo reset --hard origin/stage-yosr
-                  else
-                    git clone --depth=50 --branch stage-yosr \
-                      https://github.com/yosrtaktak/stage-sre-plateforme /repo
-                  fi
-              volumeMounts:
-                - name: repo
-                  mountPath: /repo
           volumes:
             - name: script
               configMap:
@@ -69,4 +81,3 @@ spec:
                 claimName: holmes-bridge-state
             - name: repo
               emptyDir: {}
-          restartPolicy: OnFailure
