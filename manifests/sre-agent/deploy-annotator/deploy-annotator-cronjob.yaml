@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deploy-annotator-script
+  namespace: monitoring
+data:
+  deploy-annotator.py: |
+PYCONTENT_PLACEHOLDER
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: deploy-annotator
+  namespace: monitoring
+spec:
+  schedule: "*/3 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 90
+      template:
+        spec:
+          serviceAccountName: deploy-annotator
+          containers:
+            - name: deploy-annotator
+              image: python:3.11-slim
+              command: ["python3", "/scripts/deploy-annotator.py"]
+              env:
+                - name: GRAFANA_URL
+                  value: "http://grafana.monitoring.svc.cluster.local:80"
+                - name: GRAFANA_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: grafana-agent-token
+                      key: token
+                      optional: true
+                - name: REPO_DIR
+                  value: "/repo"
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                - name: state
+                  mountPath: /state
+                - name: repo
+                  mountPath: /repo
+          initContainers:
+            - name: git-clone
+              image: alpine/git:latest
+              command:
+                - sh
+                - -c
+                - |
+                  if [ -d /repo/.git ]; then
+                    git -C /repo fetch --depth=50 origin stage-yosr
+                    git -C /repo reset --hard origin/stage-yosr
+                  else
+                    git clone --depth=50 --branch stage-yosr \
+                      https://github.com/yosrtaktak/stage-sre-plateforme /repo
+                  fi
+              volumeMounts:
+                - name: repo
+                  mountPath: /repo
+          volumes:
+            - name: script
+              configMap:
+                name: deploy-annotator-script
+            - name: state
+              persistentVolumeClaim:
+                claimName: holmes-bridge-state
+            - name: repo
+              emptyDir: {}
+          restartPolicy: OnFailure

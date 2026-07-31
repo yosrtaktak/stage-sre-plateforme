@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-stage-sre
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: git
+  url: https://github.com/yosrtaktak/stage-sre-plateforme
+  username: yosrtaktak
+  password: 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
