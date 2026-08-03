@@ -1,7 +1,8 @@
+# CI de validation — required status check de la branche stage-yosr.
+# Tourne sur TOUTES les PRs (pas de filtre paths : un required check qui ne
+# se déclenche pas resterait « Expected » et bloquerait le merge à vie).
 name: validate-manifests
-on:
-  pull_request:
-    paths: ["manifests/app/**"]
+on: [pull_request]
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -12,6 +13,7 @@ jobs:
       - name: kustomize build
         run: |
           kubectl kustomize manifests/app > /tmp/app.yaml
+          kubectl kustomize manifests/dashboards > /dev/null
       - name: kubeconform
         run: |
           curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
