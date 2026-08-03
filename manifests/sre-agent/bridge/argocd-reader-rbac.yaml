@@ -1,0 +1,43 @@
+# =============================================================================
+#  B0 : droits de lecture du bridge sur les Applications Argo CD
+# -----------------------------------------------------------------------------
+#  Le bridge (namespace monitoring) lit les CR Application du namespace argocd
+#  via l'API K8s pour corréler incidents et déploiements GitOps :
+#   - contexte « derniers syncs » injecté dans chaque enquête ;
+#   - meta git_commit sur les documents RAG ;
+#   - annotations Grafana taguées `deploy` à chaque nouveau sync.
+#  Lecture SEULE (get/list), sur le seul namespace argocd — le bridge ne peut
+#  ni déclencher un sync ni modifier quoi que ce soit.
+#  Déploiement : kubectl apply -f ai-agent/bridge/argocd-reader-rbac.yaml
+#  (puis ajouter serviceAccountName: holmes-bridge au Deployment du bridge).
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: holmes-bridge
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-app-reader
+  namespace: argocd
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: holmes-bridge-argocd-reader
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-app-reader
+subjects:
+  - kind: ServiceAccount
+    name: holmes-bridge
+    namespace: monitoring
+

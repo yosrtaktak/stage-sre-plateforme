@@ -22,10 +22,15 @@ v2 (27/07/2026) — retours d'expérience de la mise en service :
  5. Anti-fatigue post-mortem : seuls les incidents « dignes d'un post-mortem »
     en produisent un (sévérité dans POSTMORTEM_SEVERITIES ET durée >=
     POSTMORTEM_MIN_S) — sinon le canal 📋 devient du bruit qu'on ignore.
+
+v3 (03/08/2026) — B0 GitOps : corrélation incident <-> déploiement Argo CD
+ (contexte « derniers syncs » dans le prompt, meta git_commit dans le RAG,
+ annotations Grafana taguées `deploy` à chaque sync — cf. section B0).
 """
 import json
 import os
 import re
+import ssl
 import time
 import threading
 import urllib.error
@@ -78,6 +83,20 @@ FALLBACK_MODELS = [m.strip() for m in
 # RAG post-mortems : chaque diagnostic/post-mortem publié est aussi poussé
 # vers l'index vectoriel (service postmortem-rag). Vide = désactivé.
 RAG_URL = os.environ.get("RAG_URL", "").strip()
+# B0 (03/08/2026) : corrélation incident <-> déploiement GitOps. Le bridge
+# lit les Applications Argo CD via l'API K8s (ServiceAccount holmes-bridge +
+# Role lecture seule sur le namespace argocd, cf. argocd-reader-rbac.yaml) :
+#  - contexte « derniers déploiements » injecté dans chaque enquête ;
+#  - meta git_commit / git_repo_paths / synced_at sur les documents RAG
+#    (no-blame : on stocke le commit, jamais l'auteur) ;
+#  - thread annotateur : annotation Grafana taguée `deploy` par nouveau sync.
+# Feature dégradable : sans RBAC ou sans Argo CD, l'enquête continue sans
+# contexte GitOps (jamais bloquant).
+ARGOCD_ENABLED = os.environ.get("ARGOCD_ENABLED", "true").lower() == "true"
+DEPLOY_WINDOW_S = int(os.environ.get("DEPLOY_WINDOW_S", "7200"))   # 2 h
+ARGOCD_POLL_S = int(os.environ.get("ARGOCD_POLL_S", "60"))
+K8S_API = os.environ.get("K8S_API", "https://kubernetes.default.svc")
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 # Méta-observabilité : compteurs exposés en format Prometheus sur GET /metrics
 # (scrappés via les annotations prometheus.io/* du Deployment). L'agent
@@ -87,6 +106,8 @@ _metrics = {
     "skips_dedup": 0, "skips_cap": 0, "skips_postmortem_filter": 0,
     "skips_synthetic": 0, "skips_circuit": 0, "errors": 0, "quota_429": 0,
     "fallback_switch": 0, "annotations_posted": 0, "circuit_opened": 0,
+    # B0 : syncs Argo CD annotés sur Grafana + erreurs de lecture de l'API.
+    "deploy_syncs_annotated": 0, "argocd_read_errors": 0,
     # Amélioration C1 : distribution des niveaux de confiance auto-déclarés
     # par l'agent — si "basse" monte, les toolsets ne suffisent plus ou un
     # mode de panne inédit apparaît (boucle d'amélioration continue).
@@ -101,7 +122,8 @@ def _metrics_text():
     for k in ("investigations_posted", "postmortems_posted", "skips_dedup",
               "skips_cap", "skips_postmortem_filter", "skips_synthetic",
               "skips_circuit", "errors", "quota_429", "fallback_switch",
-              "annotations_posted", "circuit_opened"):
+              "annotations_posted", "circuit_opened",
+              "deploy_syncs_annotated", "argocd_read_errors"):
         lines.append(f"holmes_bridge_{k}_total {m[k]}")
     for lvl in ("haute", "moyenne", "basse"):
         lines.append(f'holmes_bridge_confidence_total{{level="{lvl}"}} '
@@ -383,10 +405,12 @@ def slack_post(text):
     _slack_send({"text": text[:3900]})
 
 
-def grafana_annotate(text, tags):
+def grafana_annotate(text, tags, prefix=True):
     """Amélioration D : pose le verdict en annotation sur les dashboards
     Grafana (marqueur temporel visible sur les graphes SLI, aux côtés des
-    annotations de chaos). No-op silencieux si le token n'est pas monté."""
+    annotations de chaos). No-op silencieux si le token n'est pas monté.
+    prefix=False (B0) : pas de tag `sre-agent` — les annotations de sync
+    `deploy` restent hors de la requête des verdicts sur les dashboards."""
     try:
         with open(GRAFANA_TOKEN_FILE) as f:
             token = f.read().strip()
@@ -395,7 +419,7 @@ def grafana_annotate(text, tags):
     try:
         body = json.dumps({
             "time": int(time.time() * 1000),
-            "tags": ["sre-agent"] + tags,
+            "tags": (["sre-agent"] if prefix else []) + tags,
             "text": text[:600],
         }).encode()
         req = urllib.request.Request(
@@ -455,6 +479,92 @@ def slack_post_rich(title, severity, slo, analysis, runbook_url=None):
             "url": runbook_url}]})
     _slack_send({"attachments": [{
         "color": SEV_COLORS.get(severity, "#439FE0"), "blocks": blocks}]})
+
+
+# --------------------------------------------------------------------------
+#  B0 : lecture Argo CD — corrélation incident <-> déploiement GitOps
+# --------------------------------------------------------------------------
+def _argocd_apps():
+    """Liste les Applications Argo CD via l'API K8s (lecture seule, SA
+    holmes-bridge — Role namespacé `argocd-app-reader` dans argocd)."""
+    with open(f"{SA_DIR}/token") as f:
+        tok = f.read().strip()
+    ctx = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+    req = urllib.request.Request(
+        f"{K8S_API}/apis/argoproj.io/v1alpha1/namespaces/argocd/applications",
+        headers={"Authorization": f"Bearer {tok}"})
+    with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
+        return json.loads(r.read()).get("items", [])
+
+
+def _recent_deploys():
+    """Syncs Argo CD terminés il y a moins de DEPLOY_WINDOW_S, du plus récent
+    au plus ancien : [(app, sha7, minutes, path, finished_iso)]. No-blame :
+    le commit, jamais l'auteur. Liste vide si Argo CD est injoignable —
+    l'enquête continue simplement sans contexte GitOps."""
+    if not ARGOCD_ENABLED:
+        return []
+    out = []
+    try:
+        now = datetime.now(timezone.utc)
+        for app in _argocd_apps():
+            st = app.get("status", {})
+            rev = (st.get("sync", {}) or {}).get("revision") or ""
+            fin = (st.get("operationState") or {}).get("finishedAt")
+            if not fin or not rev:
+                continue
+            age = (now - datetime.fromisoformat(
+                fin.replace("Z", "+00:00"))).total_seconds()
+            if 0 <= age <= DEPLOY_WINDOW_S:
+                out.append((app["metadata"]["name"], rev[:7],
+                            int(age // 60),
+                            (app.get("spec", {}).get("source", {})
+                             or {}).get("path", "?"), fin))
+    except Exception as e:
+        _metrics["argocd_read_errors"] += 1
+        log(f"argocd read error: {e}")
+    return sorted(out, key=lambda d: d[2])
+
+
+def _deploy_context(deploys):
+    """Bloc « derniers déploiements » injecté dans le prompt d'enquête —
+    le diagnostic doit se prononcer : corrélé ou non au changement."""
+    if not deploys:
+        return ""
+    return ("\nDERNIERS DÉPLOIEMENTS GitOps (syncs Argo CD, fenêtre "
+            f"{DEPLOY_WINDOW_S // 60} min) — confronte l'heure de début de "
+            "l'incident à ces heures de sync et dis EXPLICITEMENT dans ta "
+            "cause racine si l'incident est corrélé ou non au changement "
+            "déployé :\n" +
+            "\n".join(f"  - app {a} : commit {r} synchronisé il y a {m} min "
+                      f"(chemin {p})" for a, r, m, p, _ in deploys) + "\n")
+
+
+def _argo_annotator():
+    """Thread de fond : annotation Grafana taguée `deploy` (verte sur les
+    dashboards, aux côtés de `chaos` et `sre-agent`) à chaque nouveau sync
+    détecté (revision qui change). Premier tour silencieux (amorçage)."""
+    last = {}
+    while True:
+        wait = ARGOCD_POLL_S
+        try:
+            for app in _argocd_apps():
+                name = app["metadata"]["name"]
+                rev = (app.get("status", {}).get("sync", {})
+                       or {}).get("revision")
+                if not rev:
+                    continue
+                if last.get(name) and last[name] != rev:
+                    grafana_annotate(f"🚀 Sync Argo CD {name} → {rev[:7]}",
+                                     tags=["deploy", name], prefix=False)
+                    _metrics["deploy_syncs_annotated"] += 1
+                    log(f"deploy annoté : {name} -> {rev[:7]}")
+                last[name] = rev
+        except Exception as e:
+            _metrics["argocd_read_errors"] += 1
+            log(f"argocd annotator error: {e} (prochain essai dans 300s)")
+            wait = 300       # RBAC manquant / API down : on n'insiste pas
+        time.sleep(wait)
 
 
 # --------------------------------------------------------------------------
@@ -541,6 +651,10 @@ def investigate(alert, postmortem=False):
     # Amélioration A : contexte plateforme + mémoire des incidents récents
     # injectés en tête de chaque enquête (diagnostic ET post-mortem).
     ask = PLATFORM_CONTEXT + _recent_incidents(exclude_fp=fp) + "\n" + ask
+    # B0 : contexte GitOps — l'enquête sait ce qui vient d'être déployé et
+    # doit répondre « corrélé / non corrélé au changement ».
+    deploys = _recent_deploys()
+    ask += _deploy_context(deploys)
     resp = _call_holmes(ask)
     analysis = resp.get("analysis") or resp.get("response") or json.dumps(resp)
     # Amélioration C1 : la ligne « Confiance : ... » devient une métrique.
@@ -579,7 +693,12 @@ def investigate(alert, postmortem=False):
               # le document dans l'index — le RAG pénalise les "basse" au
               # ranking (anti auto-empoisonnement).
               "confidence": conf.group(1).lower() if conf else "",
-              "verdict": verdict_line[:300]})
+              "verdict": verdict_line[:300],
+              # B0 : traçabilité incident -> commit (no-blame : jamais
+              # l'auteur). Le plus récent en tête, cf. _recent_deploys().
+              "git_commit": deploys[0][1] if deploys else "",
+              "git_repo_paths": ",".join(d[3] for d in deploys),
+              "synced_at": deploys[0][4] if deploys else ""})
     _metrics["postmortems_posted" if postmortem
              else "investigations_posted"] += 1
     log(f"{'postmortem' if postmortem else 'investigation'} posted "
@@ -747,6 +866,10 @@ if __name__ == "__main__":
         f"[sev={','.join(sorted(POSTMORTEM_SEVERITIES))},min={POSTMORTEM_MIN_S}s] "
         f"fallback={','.join(FALLBACK_MODELS) or 'off'} "
         f"grafana={'on' if os.path.exists(GRAFANA_TOKEN_FILE) else 'off'} "
+        f"argocd={'on' if ARGOCD_ENABLED else 'off'}"
+        f"[fenetre={DEPLOY_WINDOW_S}s,poll={ARGOCD_POLL_S}s] "
         f"memoire={len(_diags)} diag(s)")
+    if ARGOCD_ENABLED:
+        threading.Thread(target=_argo_annotator, daemon=True).start()
     ThreadingHTTPServer(("", 8000), Handler).serve_forever()
 

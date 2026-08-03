@@ -40,6 +40,9 @@ spec:
       # chaos — cette priorité évite que bridge/RAG soient évincés les
       # premiers sous pression (vécu le 28/07 pendant le memory-hog).
       priorityClassName: sre-agent
+      # B0 : SA avec lecture seule des Applications Argo CD (namespace
+      # argocd) — cf. argocd-reader-rbac.yaml, à appliquer AVANT.
+      serviceAccountName: holmes-bridge
       containers:
         - name: bridge
           image: python:3.11-slim
@@ -93,6 +96,15 @@ spec:
             # base vectorielle des incidents. Vide = désactivé.
             - name: RAG_URL
               value: "http://postmortem-rag.monitoring.svc.cluster.local:8100"
+            # B0 : corrélation incident <-> déploiement GitOps (lecture des
+            # Applications Argo CD). Se dégrade tout seul si Argo CD ou le
+            # RBAC manquent — l'enquête continue sans contexte GitOps.
+            - name: ARGOCD_ENABLED
+              value: "true"
+            - name: DEPLOY_WINDOW_S    # fenêtre « déploiement récent » (2 h)
+              value: "7200"
+            - name: ARGOCD_POLL_S      # période de l'annotateur de syncs
+              value: "60"
           ports:
             - containerPort: 8000
           volumeMounts:
