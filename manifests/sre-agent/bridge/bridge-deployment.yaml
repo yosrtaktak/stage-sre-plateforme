@@ -116,6 +116,17 @@ spec:
             # Sans le Secret, la feature se désactive toute seule.
             - name: REMEDIATION_ENABLED
               value: "true"
+            # B4 : vérification post-sync. À l'issue de la fenêtre, les burn
+            # rates (slo:*:burnrate5m) sont comparés avant/après le sync :
+            # stables -> ✅ Slack + syncs_verified_total ; dégradés ->
+            # enquête fingerprint sync-<sha> (peut proposer le rollback B1)
+            # + syncs_degraded_total. CFR DORA = degraded/(verified+degraded).
+            - name: VERIFY_SYNC_ENABLED
+              value: "true"
+            - name: VERIFY_AFTER_S     # fenêtre d'observation post-sync
+              value: "1800"            # 30 min (mettre 300 pour une démo)
+            - name: PROM_URL
+              value: "http://obs-prometheus-server.monitoring.svc.cluster.local:80"
           ports:
             - containerPort: 8000
           volumeMounts:

@@ -34,6 +34,7 @@ import ssl
 import time
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -107,6 +108,17 @@ SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 REMEDIATION = os.environ.get("REMEDIATION_ENABLED", "true").lower() == "true"
 PR_STATE_FILE = os.environ.get("PR_STATE_FILE", "/state/prs.json")
 _prs = {}            # fingerprint -> {"t": ts, "number": n, "url": u}
+# B4 (03/08/2026) : vérification post-sync. Pour chaque nouvelle revision
+# synchronisée, une fenêtre de VERIFY_AFTER_S s'ouvre ; à son terme, les
+# burn rates (recording rules slo:*:burnrate5m) sont comparés avant/après.
+# Stables -> « ✅ sync vérifié » ; dégradés -> enquête bridge (fingerprint
+# sync-<sha>), qui peut proposer le rollback via B1. Les compteurs
+# syncs_verified/degraded donnent le Change Failure Rate (DORA).
+VERIFY_SYNC = os.environ.get("VERIFY_SYNC_ENABLED", "true").lower() == "true"
+VERIFY_AFTER_S = int(os.environ.get("VERIFY_AFTER_S", "1800"))   # 30 min
+PROM_URL = os.environ.get(
+    "PROM_URL", "http://obs-prometheus-server.monitoring.svc.cluster.local:80")
+_pending_syncs = {}  # revision -> {"t": ts, "apps": [noms]}
 
 # Méta-observabilité : compteurs exposés en format Prometheus sur GET /metrics
 # (scrappés via les annotations prometheus.io/* du Deployment). L'agent
@@ -121,6 +133,8 @@ _metrics = {
     # B1 : PRs de remédiation ouvertes / refus allow-list / fermetures auto.
     "remediation_prs_opened": 0, "remediation_rejected": 0,
     "remediation_prs_closed": 0,
+    # B4 : Change Failure Rate DORA = degraded / (verified + degraded).
+    "syncs_verified": 0, "syncs_degraded": 0,
     # Amélioration C1 : distribution des niveaux de confiance auto-déclarés
     # par l'agent — si "basse" monte, les toolsets ne suffisent plus ou un
     # mode de panne inédit apparaît (boucle d'amélioration continue).
@@ -138,7 +152,7 @@ def _metrics_text():
               "annotations_posted", "circuit_opened",
               "deploy_syncs_annotated", "argocd_read_errors",
               "remediation_prs_opened", "remediation_rejected",
-              "remediation_prs_closed"):
+              "remediation_prs_closed", "syncs_verified", "syncs_degraded"):
         lines.append(f"holmes_bridge_{k}_total {m[k]}")
     for lvl in ("haute", "moyenne", "basse"):
         lines.append(f'holmes_bridge_confidence_total{{level="{lvl}"}} '
@@ -615,12 +629,107 @@ def _argo_annotator():
                                      tags=["deploy", name], prefix=False)
                     _metrics["deploy_syncs_annotated"] += 1
                     log(f"deploy annoté : {name} -> {rev[:7]}")
+                    # B4 : la revision entre en fenêtre d'observation (une
+                    # seule vérification par revision, même si 3 apps
+                    # syncent le même commit)
+                    if VERIFY_SYNC:
+                        p = _pending_syncs.setdefault(
+                            rev, {"t": time.time(), "apps": []})
+                        p["apps"].append(name)
                 last[name] = rev
+            # B4 : fenêtres arrivées à échéance (+60 s pour laisser le
+            # scrape Prometheus rattraper la fin de fenêtre)
+            if VERIFY_SYNC:
+                now = time.time()
+                for rev in [r for r, p in _pending_syncs.items()
+                            if now - p["t"] >= VERIFY_AFTER_S + 60]:
+                    pending = _pending_syncs.pop(rev)
+                    threading.Thread(target=_safe_verify,
+                                     args=(rev, pending),
+                                     daemon=True).start()
         except Exception as e:
             _metrics["argocd_read_errors"] += 1
             log(f"argocd annotator error: {e} (prochain essai dans 300s)")
             wait = 300       # RBAC manquant / API down : on n'insiste pas
         time.sleep(wait)
+
+
+# --------------------------------------------------------------------------
+#  B4 : vérification post-sync — le déploiement a-t-il dégradé les SLI ?
+# --------------------------------------------------------------------------
+def _prom_query(expr, at=None):
+    """Instant query Prometheus ; `at` (epoch) = évaluation dans le passé."""
+    params = {"query": expr}
+    if at is not None:
+        params["time"] = f"{at:.0f}"
+    url = f"{PROM_URL}/api/v1/query?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(url, timeout=15) as r:
+        data = json.loads(r.read())
+    if data.get("status") != "success":
+        raise RuntimeError(f"prometheus: {data.get('error', 'status != success')}")
+    return data["data"]["result"]
+
+
+def _burnrate_snapshot(at):
+    """Moyenne des burn rates sur la fenêtre VERIFY_AFTER_S se terminant à
+    `at` : {nom_de_rule: valeur}. Mêmes recording rules que l'alerting —
+    on compare l'incomparable avec lui-même."""
+    res = _prom_query(
+        f'avg_over_time({{__name__=~"slo:.+:burnrate5m"}}[{VERIFY_AFTER_S}s])',
+        at=at)
+    return {r["metric"]["__name__"]: float(r["value"][1]) for r in res}
+
+
+def _verify_sync(rev, pending):
+    """Compare les burn rates avant/après la fenêtre post-sync. Stable ->
+    ✅ Slack ; dégradé -> enquête bridge fingerprint sync-<sha> (dédup,
+    plafond et circuit breaker s'appliquent), qui peut aboutir à une PR de
+    rollback via B1."""
+    t_sync, apps = pending["t"], ",".join(pending["apps"])
+    before = _burnrate_snapshot(t_sync)
+    after = _burnrate_snapshot(t_sync + VERIFY_AFTER_S)
+    degraded = []
+    for name, aft in after.items():
+        bef = before.get(name, 0.0)
+        # dégradé = brûle plus vite que le budget (>1) ET nettement plus
+        # qu'avant le sync (x2, plancher 0.05 pour ignorer le bruit à ~0)
+        if aft > 1.0 and aft > 2 * max(bef, 0.05):
+            degraded.append((name, bef, aft))
+    if not degraded:
+        _metrics["syncs_verified"] += 1
+        slack_post(f"✅ Sync {rev[:7]} vérifié ({apps}) : burn rates stables "
+                   f"sur les {VERIFY_AFTER_S // 60} min post-déploiement.")
+        log(f"sync {rev[:7]} vérifié : stable")
+        return
+    _metrics["syncs_degraded"] += 1
+    worst = max(degraded, key=lambda d: d[2])
+    detail = ", ".join(f"{n} {b:.2f}→{a:.2f}" for n, b, a in degraded)
+    slack_post(f"⚠️ Sync {rev[:7]} ({apps}) : burn rate dégradé "
+               f"post-déploiement ({detail}) — enquête lancée.")
+    log(f"sync {rev[:7]} dégradé : {detail}")
+    slo = worst[0].split(":")[1] if worst[0].count(":") >= 2 else "infra"
+    handle([{
+        "status": "firing",
+        "fingerprint": f"sync-{rev[:7]}",
+        "startsAt": datetime.fromtimestamp(
+            t_sync, timezone.utc).isoformat(),
+        "labels": {"alertname": "SyncDegradedAfterDeploy",
+                   "severity": "warning", "slo": slo},
+        "annotations": {"description": (
+            f"Le burn rate {worst[0]} est passé de {worst[1]:.2f} à "
+            f"{worst[2]:.2f} dans les {VERIFY_AFTER_S // 60} min suivant le "
+            f"sync Argo CD {rev[:7]} (apps : {apps}). Vérifie si la "
+            f"dégradation est corrélée à ce déploiement ; si le commit est "
+            f"en cause et que le remède est le retour arrière, propose "
+            f"ROLLBACK_PROPOSAL: commit: {rev}")},
+    }])
+
+
+def _safe_verify(rev, pending):
+    try:
+        _verify_sync(rev, pending)
+    except Exception as e:
+        log(f"verify sync {rev[:7]} error: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -1013,6 +1122,7 @@ if __name__ == "__main__":
         f"argocd={'on' if ARGOCD_ENABLED else 'off'}"
         f"[fenetre={DEPLOY_WINDOW_S}s,poll={ARGOCD_POLL_S}s] "
         f"remediation={'on' if REMEDIATION and os.path.exists('/etc/github/token') else 'off'} "
+        f"verify={'on' if VERIFY_SYNC else 'off'}[{VERIFY_AFTER_S}s] "
         f"memoire={len(_diags)} diag(s), {len(_prs)} PR(s) suivie(s)")
     if ARGOCD_ENABLED:
         threading.Thread(target=_argo_annotator, daemon=True).start()
