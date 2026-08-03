@@ -269,13 +269,19 @@ PM_BOOST = 0.05   # bonus de score des post-mortems : à similarité proche,
                   # passe devant un simple diagnostic à chaud.
 LOWCONF_MALUS = 0.05   # G3 : un diagnostic auto-déclaré "confiance basse"
                        # recule au ranking (symétrique du boost post-mortem).
+CONFIRMED_BOOST = 0.08  # Boucle fermée (03/08) : un « remède confirmé »
+                        # (PR de l'agent mergée PUIS vérifiée stable par B4)
+                        # est la référence maximale — appliqué ET prouvé par
+                        # la mesure, il passe devant les post-mortems.
 
 
 def _rank(results, k):
     return sorted(
         results,
         key=lambda d: (d["score"]
-                       + (PM_BOOST if d.get("type") == "postmortem" else 0.0)
+                       + (CONFIRMED_BOOST if d.get("type") == "remede_confirme"
+                          else PM_BOOST if d.get("type") == "postmortem"
+                          else 0.0)
                        - (LOWCONF_MALUS if d.get("confidence") == "basse"
                           else 0.0)),
         reverse=True)[:k]

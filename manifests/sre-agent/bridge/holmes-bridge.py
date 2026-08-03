@@ -139,6 +139,8 @@ _metrics = {
     "remediation_prs_closed": 0,
     # B4 : Change Failure Rate DORA = degraded / (verified + degraded).
     "syncs_verified": 0, "syncs_degraded": 0,
+    # Boucle fermée : remèdes de l'agent mergés puis vérifiés (ou non) par B4.
+    "remedies_confirmed": 0, "remedies_infirmed": 0,
     # Amélioration C1 : distribution des niveaux de confiance auto-déclarés
     # par l'agent — si "basse" monte, les toolsets ne suffisent plus ou un
     # mode de panne inédit apparaît (boucle d'amélioration continue).
@@ -156,7 +158,8 @@ def _metrics_text():
               "annotations_posted", "circuit_opened",
               "deploy_syncs_annotated", "argocd_read_errors",
               "remediation_prs_opened", "remediation_rejected",
-              "remediation_prs_closed", "syncs_verified", "syncs_degraded"):
+              "remediation_prs_closed", "syncs_verified", "syncs_degraded",
+              "remedies_confirmed", "remedies_infirmed"):
         lines.append(f"holmes_bridge_{k}_total {m[k]}")
     for lvl in ("haute", "moyenne", "basse"):
         lines.append(f'holmes_bridge_confidence_total{{level="{lvl}"}} '
@@ -266,8 +269,13 @@ d) une recherche dans la mémoire des incidents (outil
    explicitement si c'est une récidive, et vérifie si le remède qui avait
    fonctionné s'applique encore — cite-le alors dans tes actions avec sa
    date. Les documents de type "postmortem" sont les plus fiables (leur
-   cause a été confirmée après coup) ; un remède passé ne dispense JAMAIS
-   des vérifications (a)-(c) : c'est une piste, pas une preuve.
+   cause a été confirmée après coup) ; les documents de type
+   "remede_confirme" sont la référence MAXIMALE : leur remède a été appliqué
+   par une PR mergée PUIS vérifié stable par la mesure post-déploiement —
+   s'il en existe un applicable au cas présent, propose ce remède en
+   priorité en citant sa date et son numéro de PR. Un remède passé ne
+   dispense JAMAIS des vérifications (a)-(c) : c'est une piste, pas une
+   preuve.
 e) la valeur ACTUELLE et l'historique 1 h de la recording rule de burn rate
    qui a déclenché l'alerte (slo:{slo}:burnrate5m et burnrate1h si elles
    existent) — cite les valeurs mesurées. RÈGLE DE COHÉRENCE : si ton taux
@@ -712,11 +720,72 @@ def _burnrate_snapshot(at, names):
     return out
 
 
+def _confirm_remedies(rev, stable, detail=""):
+    """Boucle fermée : si le sync vérifié est le MERGE d'une PR de l'agent,
+    le verdict B4 devient la preuve (ou la réfutation) du remède — et cette
+    preuve rejoint la mémoire Qdrant. Les enquêtes futures classeront les
+    « remede_confirme » au-dessus de tout (CONFIRMED_BOOST côté RAG)."""
+    with _lock:
+        matches = [(fp, dict(i)) for fp, i in _prs.items()
+                   if i.get("merge_sha", "")[:7] == rev[:7]]
+    for fp, info in matches:
+        when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        if stable:
+            _metrics["remedies_confirmed"] += 1
+            _rag_add(
+                title=f"🏅 Remède confirmé — {info.get('alert', '?')} — {when}",
+                text=(f"Le correctif proposé par l'agent a été appliqué et "
+                      f"PROUVÉ efficace.\n"
+                      f"- Incident : {info.get('alert', '?')} — "
+                      f"{info.get('verdict', '')}\n"
+                      f"- Remède : PR #{info['number']} « "
+                      f"{info.get('title', '')} » ({info.get('url', '')})\n"
+                      f"- Application : merge humain, commit {rev[:7]}, "
+                      f"déployé par Argo CD\n"
+                      f"- Preuve : burn rates stables sur "
+                      f"{VERIFY_AFTER_S // 60} min post-déploiement (B4).\n"
+                      f"Si un incident similaire se reproduit, ce remède est "
+                      f"la première piste à vérifier."),
+                tags=[info.get("alert", "?"), "remede-confirme"],
+                meta={"type": "remede_confirme",
+                      "alert": info.get("alert", ""),
+                      "pr": info["number"], "git_commit": rev[:7],
+                      "date": when, "verdict": info.get("verdict", "")[:300]})
+            slack_post(f"🏅 Remède confirmé : PR #{info['number']} "
+                       f"(« {info.get('title', '')} ») mergée et vérifiée — "
+                       f"SLI stables {VERIFY_AFTER_S // 60} min après le "
+                       f"déploiement. Mémorisé dans la base d'incidents.")
+            log(f"remède confirmé : PR #{info['number']} (commit {rev[:7]})")
+        else:
+            _metrics["remedies_infirmed"] += 1
+            _rag_add(
+                title=f"⚠️ Remède infirmé — {info.get('alert', '?')} — {when}",
+                text=(f"Le correctif de la PR #{info['number']} « "
+                      f"{info.get('title', '')} » a été mergé (commit "
+                      f"{rev[:7]}) mais les SLI se sont DÉGRADÉS dans la "
+                      f"fenêtre post-déploiement ({detail}). Ce remède ne "
+                      f"doit PAS être re-proposé tel quel sans nouvelle "
+                      f"analyse."),
+                tags=[info.get("alert", "?"), "remede-infirme"],
+                meta={"type": "remede_infirme",
+                      "alert": info.get("alert", ""),
+                      "pr": info["number"], "git_commit": rev[:7],
+                      "date": when})
+            slack_post(f"⚠️ Remède NON confirmé : les SLI se sont dégradés "
+                       f"après le merge de la PR #{info['number']} — "
+                       f"enquête en cours (sync-{rev[:7]}).")
+            log(f"remède infirmé : PR #{info['number']} (commit {rev[:7]})")
+        with _lock:
+            _prs.pop(fp, None)
+            _save_prs()
+
+
 def _verify_sync(rev, pending):
     """Compare les burn rates avant/après la fenêtre post-sync. Stable ->
     ✅ Slack ; dégradé -> enquête bridge fingerprint sync-<sha> (dédup,
     plafond et circuit breaker s'appliquent), qui peut aboutir à une PR de
-    rollback via B1."""
+    rollback via B1. Dans les deux cas, si ce sync est le merge d'une PR de
+    l'agent, le verdict confirme ou infirme le remède (_confirm_remedies)."""
     t_sync, apps = pending["t"], ",".join(pending["apps"])
     names = _burnrate_names()
     before = _burnrate_snapshot(t_sync, names)
@@ -733,10 +802,12 @@ def _verify_sync(rev, pending):
         slack_post(f"✅ Sync {rev[:7]} vérifié ({apps}) : burn rates stables "
                    f"sur les {VERIFY_AFTER_S // 60} min post-déploiement.")
         log(f"sync {rev[:7]} vérifié : stable")
+        _confirm_remedies(rev, stable=True)
         return
     _metrics["syncs_degraded"] += 1
     worst = max(degraded, key=lambda d: d[2])
     detail = ", ".join(f"{n} {b:.2f}→{a:.2f}" for n, b, a in degraded)
+    _confirm_remedies(rev, stable=False, detail=detail)
     slack_post(f"⚠️ Sync {rev[:7]} ({apps}) : burn rate dégradé "
                f"post-déploiement ({detail}) — enquête lancée.")
     log(f"sync {rev[:7]} dégradé : {detail}")
@@ -804,7 +875,9 @@ def _maybe_remediate(analysis, labels, fp):
         _metrics["remediation_prs_opened"] += 1
         with _lock:
             _prs[fp] = {"t": time.time(), "number": res["number"],
-                        "url": res["url"]}
+                        "url": res["url"], "title": res.get("title", ""),
+                        "alert": labels.get("alertname", "?"),
+                        "verdict": analysis.strip().split("\n")[0][:200]}
             _save_prs()
         slack_post(
             f"🔧 PR de remédiation ouverte pour *{labels.get('alertname', '?')}* "
@@ -821,26 +894,76 @@ def _maybe_remediate(analysis, labels, fp):
 def _close_pr_if_open(fp):
     """Borne n°6 du guide : l'alerte se résout avant merge -> la PR est
     commentée puis fermée (l'humain peut la rouvrir si le correctif durable
-    reste pertinent)."""
+    reste pertinent). Boucle fermée : si la PR est en fait MERGÉE (cas
+    normal : le merge a guéri, donc l'alerte se résout), on ne ferme rien —
+    le suivi continue jusqu'à la confirmation B4 du remède."""
     with _lock:
-        info = _prs.pop(fp, None)
-        if info:
-            _save_prs()
+        info = _prs.get(fp)
     if not info:
         return
     try:
         import remediation
+        st = remediation.pr_status(info["number"])
+        if st["merged"]:
+            with _lock:
+                if fp in _prs:
+                    _prs[fp]["merge_sha"] = st["merge_sha"]
+                    _save_prs()
+            log(f"PR #{info['number']} mergée ({st['merge_sha'][:7]}) — "
+                f"suivi conservé pour confirmation B4 du remède")
+            return
         remediation.close_pr(
             info["number"],
             "🤖 L'alerte s'est résolue avant merge (auto-guérison ou "
             "mitigation) — PR fermée automatiquement. Rouvrir si le "
             "correctif durable reste pertinent.")
         _metrics["remediation_prs_closed"] += 1
+        with _lock:
+            _prs.pop(fp, None)
+            _save_prs()
         slack_post(f"✅ Alerte résolue — PR de remédiation fermée : "
                    f"{info['url']}")
         log(f"PR #{info['number']} fermée (alerte résolue)")
     except Exception as e:
         log(f"pr close error: {e}")
+
+
+def _pr_watcher():
+    """Boucle fermée (03/08) : suit le destin des PRs ouvertes par l'agent.
+    Mergée -> enregistre le merge_sha (B4 confirmera le remède au sync) ;
+    fermée sans merge (rejet humain) -> suivi retiré. Poll doux : 3 min."""
+    while True:
+        time.sleep(180)
+        with _lock:
+            items = [(fp, dict(i)) for fp, i in _prs.items()
+                     if not i.get("merge_sha")]
+        if not items:
+            continue
+        try:
+            import remediation
+            if not remediation.enabled():
+                continue
+            for fp, info in items:
+                try:
+                    st = remediation.pr_status(info["number"])
+                except Exception as e:
+                    log(f"pr watcher #{info['number']}: {e}")
+                    continue
+                if st["merged"]:
+                    with _lock:
+                        if fp in _prs:
+                            _prs[fp]["merge_sha"] = st["merge_sha"]
+                            _save_prs()
+                    log(f"PR #{info['number']} mergée ({st['merge_sha'][:7]})"
+                        f" — en attente de confirmation B4")
+                elif st["state"] == "closed":
+                    with _lock:
+                        _prs.pop(fp, None)
+                        _save_prs()
+                    log(f"PR #{info['number']} fermée sans merge — "
+                        f"suivi retiré")
+        except Exception as e:
+            log(f"pr watcher error: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -1159,5 +1282,7 @@ if __name__ == "__main__":
         f"memoire={len(_diags)} diag(s), {len(_prs)} PR(s) suivie(s)")
     if ARGOCD_ENABLED:
         threading.Thread(target=_argo_annotator, daemon=True).start()
+    if REMEDIATION:
+        threading.Thread(target=_pr_watcher, daemon=True).start()
     ThreadingHTTPServer(("", 8000), Handler).serve_forever()
 

@@ -356,7 +356,18 @@ def maybe_open_pr(analysis, labels):
             {"labels": lbls}, token=token)
     except Exception:
         pass          # les labels sont cosmétiques : jamais bloquants
-    return {"url": pr["html_url"], "number": pr["number"]}, None
+    return {"url": pr["html_url"], "number": pr["number"],
+            "title": title, "branch": branch}, None
+
+
+def pr_status(number):
+    """Boucle fermée : état d'une PR suivie. merged=True + merge_sha
+    permettent à B4 de reconnaître le sync du remède et de le confirmer."""
+    token, repo = _cfg("token"), _cfg("repo")
+    pr = _gh("GET", f"/repos/{repo}/pulls/{number}", token=token)
+    return {"state": pr.get("state", "?"),
+            "merged": bool(pr.get("merged")),
+            "merge_sha": pr.get("merge_commit_sha") or ""}
 
 
 def close_pr(number, comment):
@@ -366,3 +377,4 @@ def close_pr(number, comment):
         {"body": comment}, token=token)
     _gh("PATCH", f"/repos/{repo}/pulls/{number}",
         {"state": "closed"}, token=token)
+
