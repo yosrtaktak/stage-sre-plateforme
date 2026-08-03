@@ -34,7 +34,7 @@ spec:
               memory: 64Mi
             limits:
               cpu: 250m
-              memory: 256Mi
+              memory: 512Mi
           readinessProbe:
             grpc:
               port: 50051
