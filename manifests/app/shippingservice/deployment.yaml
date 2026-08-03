@@ -31,10 +31,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 6Mi
+              memory: 4Mi
             limits:
               cpu: 250m
-              memory: 6Mi
+              memory: 4Mi
           readinessProbe:
             grpc:
               port: 50051
