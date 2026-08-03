@@ -98,6 +98,10 @@ DEPLOY_WINDOW_S = int(os.environ.get("DEPLOY_WINDOW_S", "7200"))   # 2 h
 ARGOCD_POLL_S = int(os.environ.get("ARGOCD_POLL_S", "60"))
 K8S_API = os.environ.get("K8S_API", "https://kubernetes.default.svc")
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+# Vécu le 03/08 : pendant un blip réseau, Argo CD expose la BRANCHE
+# (« stage-yosr ») comme revision au lieu du SHA résolu — tout consommateur
+# de revision doit filtrer sur un SHA hexadécimal.
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # B1 (03/08/2026) : Remediation-as-PR. Quand le diagnostic contient un bloc
 # PATCH_PROPOSAL / ROLLBACK_PROPOSAL, le module remediation.py (même
 # ConfigMap) le transforme en pull request GitHub — allow-list en dur,
@@ -581,7 +585,7 @@ def _recent_deploys():
             st = app.get("status", {})
             rev = (st.get("sync", {}) or {}).get("revision") or ""
             fin = (st.get("operationState") or {}).get("finishedAt")
-            if not fin or not rev:
+            if not fin or not _SHA_RE.match(rev):
                 continue
             age = (now - datetime.fromisoformat(
                 fin.replace("Z", "+00:00"))).total_seconds()
@@ -622,8 +626,8 @@ def _argo_annotator():
                 name = app["metadata"]["name"]
                 rev = (app.get("status", {}).get("sync", {})
                        or {}).get("revision")
-                if not rev:
-                    continue
+                if not rev or not _SHA_RE.match(rev):
+                    continue      # branche/pseudo-revision pendant un blip
                 if last.get(name) and last[name] != rev:
                     grafana_annotate(f"🚀 Sync Argo CD {name} → {rev[:7]}",
                                      tags=["deploy", name], prefix=False)
@@ -663,21 +667,49 @@ def _prom_query(expr, at=None):
     if at is not None:
         params["time"] = f"{at:.0f}"
     url = f"{PROM_URL}/api/v1/query?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=15) as r:
-        data = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        # Prometheus met la vraie raison dans le corps (400/422) — sans elle,
+        # un « HTTP Error 422 » est indébogable (vécu le 03/08).
+        detail = ""
+        try:
+            detail = e.read().decode(errors="replace")[:300]
+        except Exception:
+            pass
+        raise RuntimeError(f"prometheus {e.code}: {detail}") from None
     if data.get("status") != "success":
         raise RuntimeError(f"prometheus: {data.get('error', 'status != success')}")
     return data["data"]["result"]
 
 
-def _burnrate_snapshot(at):
-    """Moyenne des burn rates sur la fenêtre VERIFY_AFTER_S se terminant à
-    `at` : {nom_de_rule: valeur}. Mêmes recording rules que l'alerting —
-    on compare l'incomparable avec lui-même."""
-    res = _prom_query(
-        f'avg_over_time({{__name__=~"slo:.+:burnrate5m"}}[{VERIFY_AFTER_S}s])',
-        at=at)
-    return {r["metric"]["__name__"]: float(r["value"][1]) for r in res}
+def _burnrate_names():
+    """Noms des recording rules de burn rate. Requête séparée car
+    avg_over_time() sur un sélecteur regex supprime __name__ du résultat :
+    des rules sans autre label deviennent indistinguables -> erreur 422
+    « same labelset » (vécu le 03/08)."""
+    params = urllib.parse.urlencode(
+        {"match[]": '{__name__=~"slo:.+:burnrate5m"}'})
+    url = f"{PROM_URL}/api/v1/label/__name__/values?" + params
+    with urllib.request.urlopen(url, timeout=15) as r:
+        data = json.loads(r.read())
+    if data.get("status") != "success":
+        raise RuntimeError(f"prometheus label values: {data.get('error')}")
+    return data.get("data", [])
+
+
+def _burnrate_snapshot(at, names):
+    """Moyenne de chaque burn rate sur la fenêtre VERIFY_AFTER_S se
+    terminant à `at` : {nom_de_rule: valeur}. Mêmes recording rules que
+    l'alerting — on compare le comparable. Si une rule a plusieurs séries,
+    on garde la pire (max)."""
+    out = {}
+    for name in names:
+        res = _prom_query(f"avg_over_time({name}[{VERIFY_AFTER_S}s])", at=at)
+        if res:
+            out[name] = max(float(r["value"][1]) for r in res)
+    return out
 
 
 def _verify_sync(rev, pending):
@@ -686,8 +718,9 @@ def _verify_sync(rev, pending):
     plafond et circuit breaker s'appliquent), qui peut aboutir à une PR de
     rollback via B1."""
     t_sync, apps = pending["t"], ",".join(pending["apps"])
-    before = _burnrate_snapshot(t_sync)
-    after = _burnrate_snapshot(t_sync + VERIFY_AFTER_S)
+    names = _burnrate_names()
+    before = _burnrate_snapshot(t_sync, names)
+    after = _burnrate_snapshot(t_sync + VERIFY_AFTER_S, names)
     degraded = []
     for name, aft in after.items():
         bef = before.get(name, 0.0)
