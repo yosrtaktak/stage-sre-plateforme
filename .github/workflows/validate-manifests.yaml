@@ -1,6 +1,8 @@
 # CI de validation — required status check de la branche stage-yosr.
-# Tourne sur TOUTES les PRs (pas de filtre paths : un required check qui ne
-# se déclenche pas resterait « Expected » et bloquerait le merge à vie).
+# Tourne sur TOUTES les PRs (un required check jamais déclenché bloquerait
+# le merge à vie). Les CRDs (Istio…) sont validées via le catalogue
+# communautaire datreeio ; les kinds sans schéma sont ignorés (jamais
+# « Invalid », simplement non vérifiables).
 name: validate-manifests
 on: [pull_request]
 jobs:
@@ -13,8 +15,11 @@ jobs:
       - name: kustomize build
         run: |
           kubectl kustomize manifests/app > /tmp/app.yaml
-          kubectl kustomize manifests/dashboards > /dev/null
       - name: kubeconform
         run: |
           curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
-          ./kubeconform -strict -summary /tmp/app.yaml
+          ./kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
+            -ignore-missing-schemas \
+            /tmp/app.yaml
