@@ -1,9 +1,10 @@
 # =============================================================================
 #  holmes-bridge : Alertmanager -> HolmesGPT -> Slack
 # -----------------------------------------------------------------------------
-#  Le script est monté depuis un ConfigMap (à créer depuis le repo) :
+#  Le script est monté depuis un ConfigMap (à créer depuis le repo) — B1 :
+#  remediation.py voyage dans le MÊME ConfigMap :
 #    kubectl -n monitoring create configmap holmes-bridge-script \
-#      --from-file=ai-agent/bridge/holmes-bridge.py \
+#      --from-file=holmes-bridge.py --from-file=remediation.py \
 #      --dry-run=client -o yaml | kubectl apply -f -
 #  Les diagnostics partent sur un canal Slack DÉDIÉ à l'agent (ex. #sre-agent),
 #  séparé des 2 canaux d'alerte existants. Créer d'abord le webhook entrant
@@ -105,6 +106,16 @@ spec:
               value: "7200"
             - name: ARGOCD_POLL_S      # période de l'annotateur de syncs
               value: "60"
+            # B1 : Remediation-as-PR. Requiert le Secret github-remediation
+            # (clés token/repo/base, PAT fine-grained Contents RW + Pull
+            # requests RW sur le seul repo) monté sur /etc/github :
+            #   kubectl -n monitoring create secret generic github-remediation \
+            #     --from-literal=token='github_pat_…' \
+            #     --from-literal=repo='yosrtaktak/stage-sre-plateforme' \
+            #     --from-literal=base='stage-yosr'
+            # Sans le Secret, la feature se désactive toute seule.
+            - name: REMEDIATION_ENABLED
+              value: "true"
           ports:
             - containerPort: 8000
           volumeMounts:
@@ -118,6 +129,9 @@ spec:
               mountPath: /state
             - name: grafana            # token annotations (Secret optionnel)
               mountPath: /etc/grafana
+              readOnly: true
+            - name: github             # B1 : PAT remédiation (optionnel)
+              mountPath: /etc/github
               readOnly: true
           readinessProbe:
             httpGet: { path: /healthz, port: 8000 }
@@ -149,6 +163,10 @@ spec:
             secretName: grafana-agent-token
             optional: true   # sans le Secret, le montage est vide et la
                              # feature annotations reste simplement off
+        - name: github
+          secret:
+            secretName: github-remediation
+            optional: true   # sans le Secret, remediation reste off
 ---
 apiVersion: v1
 kind: Service

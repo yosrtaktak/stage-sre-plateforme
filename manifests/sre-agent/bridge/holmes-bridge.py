@@ -97,6 +97,16 @@ DEPLOY_WINDOW_S = int(os.environ.get("DEPLOY_WINDOW_S", "7200"))   # 2 h
 ARGOCD_POLL_S = int(os.environ.get("ARGOCD_POLL_S", "60"))
 K8S_API = os.environ.get("K8S_API", "https://kubernetes.default.svc")
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+# B1 (03/08/2026) : Remediation-as-PR. Quand le diagnostic contient un bloc
+# PATCH_PROPOSAL / ROLLBACK_PROPOSAL, le module remediation.py (même
+# ConfigMap) le transforme en pull request GitHub — allow-list en dur,
+# vérification de l'état réel, jamais de merge (branche protégée). Bornes :
+# 1 PR par fingerprint (suffixe |pr dans _seen), fermeture automatique si
+# l'alerte se résout avant merge. Se désactive tout seul si le Secret
+# github-remediation n'est pas monté.
+REMEDIATION = os.environ.get("REMEDIATION_ENABLED", "true").lower() == "true"
+PR_STATE_FILE = os.environ.get("PR_STATE_FILE", "/state/prs.json")
+_prs = {}            # fingerprint -> {"t": ts, "number": n, "url": u}
 
 # Méta-observabilité : compteurs exposés en format Prometheus sur GET /metrics
 # (scrappés via les annotations prometheus.io/* du Deployment). L'agent
@@ -108,6 +118,9 @@ _metrics = {
     "fallback_switch": 0, "annotations_posted": 0, "circuit_opened": 0,
     # B0 : syncs Argo CD annotés sur Grafana + erreurs de lecture de l'API.
     "deploy_syncs_annotated": 0, "argocd_read_errors": 0,
+    # B1 : PRs de remédiation ouvertes / refus allow-list / fermetures auto.
+    "remediation_prs_opened": 0, "remediation_rejected": 0,
+    "remediation_prs_closed": 0,
     # Amélioration C1 : distribution des niveaux de confiance auto-déclarés
     # par l'agent — si "basse" monte, les toolsets ne suffisent plus ou un
     # mode de panne inédit apparaît (boucle d'amélioration continue).
@@ -123,7 +136,9 @@ def _metrics_text():
               "skips_cap", "skips_postmortem_filter", "skips_synthetic",
               "skips_circuit", "errors", "quota_429", "fallback_switch",
               "annotations_posted", "circuit_opened",
-              "deploy_syncs_annotated", "argocd_read_errors"):
+              "deploy_syncs_annotated", "argocd_read_errors",
+              "remediation_prs_opened", "remediation_rejected",
+              "remediation_prs_closed"):
         lines.append(f"holmes_bridge_{k}_total {m[k]}")
     for lvl in ("haute", "moyenne", "basse"):
         lines.append(f'holmes_bridge_confidence_total{{level="{lvl}"}} '
@@ -271,6 +286,28 @@ développement va dans les sections 1-3. Puis une ligne vide, puis structure ain
    avec les VRAIS noms de ressources (ex. `deploy/paymentservice`, jamais un
    nom de pod recopié en nom de deployment). Si tu n'as pas la preuve qu'une
    action corrigera le problème, dis-le au lieu de la recommander.
+RÈGLE PATCH (remédiation par PR) : si — et seulement si — ton correctif
+durable (4b) est un changement de MANIFESTE du repo GitOps portant sur une
+sonde (livenessProbe/readinessProbe), des resources (requests/limits),
+spec.replicas ou terminationGracePeriodSeconds, ajoute EN FIN de diagnostic
+un bloc machine-parsable EXACTEMENT sous cette forme (valeurs scalaires
+simples, une ligne par champ) :
+PATCH_PROPOSAL:
+file: manifests/app/<service>/deployment.yaml
+path: spec.template.spec.containers[0].livenessProbe.timeoutSeconds
+old: <valeur actuellement dans le repo>
+new: <valeur proposée>
+reason: <une phrase citant la preuve mesurée>
+Si ton diagnostic conclut « corrélé au commit <sha> » (contexte DERNIERS
+DÉPLOIEMENTS) et que le remède est le retour arrière de ce commit, émets À
+LA PLACE :
+ROLLBACK_PROPOSAL:
+commit: <sha>
+reason: <une phrase citant la preuve>
+Un seul bloc maximum. N'émets JAMAIS ces blocs pour un autre type de champ
+(image, env, command, RBAC, secret, volumes…) — la recommandation reste
+alors textuelle. Sans certitude sur file/path/old exacts, n'émets pas de
+bloc : un bloc faux sera refusé par l'allow-list.
 Termine par UNE ligne : « Confiance : haute|moyenne|basse — <ce qui pourrait
 falsifier ce diagnostic> » (haute = cause directement observée ; moyenne =
 déduite de mesures concordantes ; basse = hypothèse restante).
@@ -358,6 +395,25 @@ def _store_diag(fp, text):
             os.replace(tmp, DIAG_STATE_FILE)
         except Exception as e:
             log(f"diag save error: {e}")
+
+
+def _load_prs():
+    try:
+        with open(PR_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_prs():
+    # Appelé sous _lock — même mécanique atomique que la dédup.
+    try:
+        tmp = PR_STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_prs, f)
+        os.replace(tmp, PR_STATE_FILE)
+    except Exception as e:
+        log(f"pr state save error: {e}")
 
 
 def _alert_fp(alert):
@@ -568,6 +624,84 @@ def _argo_annotator():
 
 
 # --------------------------------------------------------------------------
+#  B1 : Remediation-as-PR — orchestration côté bridge
+# --------------------------------------------------------------------------
+def _maybe_remediate(analysis, labels, fp):
+    """Si le diagnostic contient un PATCH/ROLLBACK_PROPOSAL, le module
+    remediation (allow-list en dur) tente d'ouvrir la PR. Bornes : 1 PR par
+    fingerprint (suffixe |pr), appelé uniquement sur les diagnostics (jamais
+    post-mortem ; les alertes synthetic sont déjà filtrées en amont)."""
+    if not REMEDIATION:
+        return
+    try:
+        import remediation
+    except Exception as e:
+        log(f"remediation import error: {e}")
+        return
+    if not remediation.enabled():
+        return                      # Secret github-remediation absent
+    prfp = fp + "|pr"
+    with _lock:
+        if prfp in _seen:
+            log("skip PR (déjà proposée pour cette empreinte)")
+            return
+        _seen[prfp] = time.time()
+        _save_seen()
+    try:
+        res, reason = remediation.maybe_open_pr(analysis, labels)
+    except Exception as e:
+        # Erreur réseau/API : on LIBÈRE l'empreinte (même philosophie que le
+        # correctif N1) — une prochaine enquête pourra retenter.
+        _metrics["errors"] += 1
+        with _lock:
+            _seen.pop(prfp, None)
+            _save_seen()
+        log(f"remediation error: {e}")
+        return
+    if res:
+        _metrics["remediation_prs_opened"] += 1
+        with _lock:
+            _prs[fp] = {"t": time.time(), "number": res["number"],
+                        "url": res["url"]}
+            _save_prs()
+        slack_post(
+            f"🔧 PR de remédiation ouverte pour *{labels.get('alertname', '?')}* "
+            f": {res['url']}\nCI `validate-manifests` en cours — le merge "
+            f"reste une décision humaine (branche protégée).")
+        log(f"PR ouverte : {res['url']}")
+    elif reason not in ("no-proposal", "disabled"):
+        # Refus allow-list / état périmé : journalisé + compté, le correctif
+        # reste une recommandation Slack (le diagnostic est déjà posté).
+        _metrics["remediation_rejected"] += 1
+        log(f"remediation refusée ({reason})")
+
+
+def _close_pr_if_open(fp):
+    """Borne n°6 du guide : l'alerte se résout avant merge -> la PR est
+    commentée puis fermée (l'humain peut la rouvrir si le correctif durable
+    reste pertinent)."""
+    with _lock:
+        info = _prs.pop(fp, None)
+        if info:
+            _save_prs()
+    if not info:
+        return
+    try:
+        import remediation
+        remediation.close_pr(
+            info["number"],
+            "🤖 L'alerte s'est résolue avant merge (auto-guérison ou "
+            "mitigation) — PR fermée automatiquement. Rouvrir si le "
+            "correctif durable reste pertinent.")
+        _metrics["remediation_prs_closed"] += 1
+        slack_post(f"✅ Alerte résolue — PR de remédiation fermée : "
+                   f"{info['url']}")
+        log(f"PR #{info['number']} fermée (alerte résolue)")
+    except Exception as e:
+        log(f"pr close error: {e}")
+
+
+# --------------------------------------------------------------------------
 #  Appel Holmes : retry quota (v2) + fallback de modèle (amélioration E)
 # --------------------------------------------------------------------------
 def _is_quota_error(code, body):
@@ -703,6 +837,10 @@ def investigate(alert, postmortem=False):
              else "investigations_posted"] += 1
     log(f"{'postmortem' if postmortem else 'investigation'} posted "
         f"for {labels.get('alertname')}")
+    # B1 : correctif durable de type manifeste -> pull request (le diagnostic
+    # Slack est déjà parti ; la PR est un canal de sortie supplémentaire).
+    if not postmortem:
+        _maybe_remediate(analysis, labels, fp)
 
 
 def _incident_duration_s(alert):
@@ -730,6 +868,11 @@ def handle(alerts):
             _metrics["skips_synthetic"] += 1
             log(f"skip (alerte synthetic) : {name}")
             continue
+        # B1 : alerte résolue avant merge -> fermer la PR de remédiation
+        # associée (indépendant du filtre post-mortem ci-dessous).
+        if status == "resolved" and _prs.get(_alert_fp(alert)):
+            threading.Thread(target=_close_pr_if_open,
+                             args=(_alert_fp(alert),), daemon=True).start()
         # Anti-fatigue post-mortem (amélioration 5) : seuls les incidents
         # significatifs méritent un 📋 dans le canal.
         if postmortem:
@@ -859,6 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     _seen = _load_seen()
     _diags = _load_diags()
+    _prs = _load_prs()
     log(f"listening :8000 -> holmes={HOLMES_URL} model={HOLMES_MODEL} "
         f"dedup={DEDUP_TTL_S}s max={MAX_PER_HOUR}/h retry={RETRY_MAX}x{RETRY_WAIT_S}s "
         f"state={DEDUP_STATE_FILE} ({len(_seen)} empreintes rechargées) "
@@ -868,7 +1012,8 @@ if __name__ == "__main__":
         f"grafana={'on' if os.path.exists(GRAFANA_TOKEN_FILE) else 'off'} "
         f"argocd={'on' if ARGOCD_ENABLED else 'off'}"
         f"[fenetre={DEPLOY_WINDOW_S}s,poll={ARGOCD_POLL_S}s] "
-        f"memoire={len(_diags)} diag(s)")
+        f"remediation={'on' if REMEDIATION and os.path.exists('/etc/github/token') else 'off'} "
+        f"memoire={len(_diags)} diag(s), {len(_prs)} PR(s) suivie(s)")
     if ARGOCD_ENABLED:
         threading.Thread(target=_argo_annotator, daemon=True).start()
     ThreadingHTTPServer(("", 8000), Handler).serve_forever()
