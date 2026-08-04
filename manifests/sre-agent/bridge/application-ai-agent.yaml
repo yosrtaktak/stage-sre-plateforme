@@ -22,7 +22,7 @@ spec:
     syncOptions:
       - ServerSideApply=true
     # Étape 2 (après validation du premier sync manuel) :
-    # automated:
-    #   prune: true      # NB : supprime aussi le PVC holmes-bridge-state si
-    #   selfHeal: true   # l'Application est supprimée (mémoire dédup perdue)
+       automated:
+       prune: true      # NB : supprime aussi le PVC holmes-bridge-state si
+       selfHeal: true   # l'Application est supprimée (mémoire dédup perdue)
 
