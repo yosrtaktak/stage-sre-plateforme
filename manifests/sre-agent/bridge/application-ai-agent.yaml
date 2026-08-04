@@ -14,7 +14,7 @@ spec:
   source:
     repoURL: https://github.com/yosrtaktak/stage-sre-plateforme
     targetRevision: stage-yosr
-    path: manifests/ai-agent
+    path: manifests/sre-agent/bridge
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
