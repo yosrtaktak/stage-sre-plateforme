@@ -1,0 +1,19 @@
+# =============================================================================
+#  manifests/ai-agent — le bridge passe en GitOps (Application ArgoCD ai-agent)
+# -----------------------------------------------------------------------------
+#  La ConfigMap du script n'est PLUS créée à la main : le configMapGenerator
+#  la génère avec un suffixe de hash. Nouveau contenu .py => nouveau nom de
+#  ConfigMap => podspec modifié => ArgoCD redéploie le bridge tout seul.
+#  (Ne jamais ajouter disableNameSuffixHash: true — c'est le hash qui fait
+#  office de rollout automatique.)
+#  Les Secrets (holmes-slack-webhook, github-remediation, grafana-agent-token)
+#  restent créés à la main sur le cluster : JAMAIS dans ce repo public.
+# =============================================================================
+namespace: monitoring
+resources:
+  - bridge-deployment.yaml
+configMapGenerator:
+  - name: holmes-bridge-script
+    files:
+      - holmes-bridge.py
+      - remediation.py

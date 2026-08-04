@@ -46,16 +46,45 @@ ALLOWED_FILES = (
 )
 ALLOWED_PATHS = (
     re.compile(r"^spec\.template\.spec\.containers\[\d\]\."
-               r"(livenessProbe|readinessProbe)\."
+               r"(livenessProbe|readinessProbe|startupProbe)\."
                r"(initialDelaySeconds|periodSeconds|timeoutSeconds"
                r"|failureThreshold|successThreshold)$"),
     re.compile(r"^spec\.template\.spec\.containers\[\d\]\."
-               r"resources\.(requests|limits)\.(cpu|memory)$"),
+               r"resources\.(requests|limits)\."
+               r"(cpu|memory|ephemeral-storage)$"),
     re.compile(r"^spec\.replicas$"),
     re.compile(r"^spec\.template\.spec\.terminationGracePeriodSeconds$"),
+    re.compile(r"^spec\.strategy\.rollingUpdate\.(maxSurge|maxUnavailable)$"),
+    re.compile(r"^spec\.progressDeadlineSeconds$"),
 )
 # Scalaires k8s simples uniquement : entiers, cpu (500m), mémoire (128Mi).
 VALUE_RE = re.compile(r"^[0-9]+(m|Ki|Mi|Gi)?$")
+# maxSurge/maxUnavailable acceptent aussi les pourcentages ("25%").
+PCT_RE = re.compile(r"^([0-9]{1,3})(%)?$")
+
+
+def _check_values(path, old, new):
+    """Forme des DEUX valeurs + bornes sur `new` seulement : `old` est l'état
+    courant (possiblement hors bornes — c'est ce qu'on corrige)."""
+    field = path.split(".")[-1]
+    if field in ("maxSurge", "maxUnavailable"):
+        # rollout : jamais de bascule brutale — 100% couperait tout le service
+        if not (PCT_RE.match(old) and PCT_RE.match(new)):
+            raise _Reject("value-not-allowed")
+        n, pct = PCT_RE.match(new).groups()
+        n = int(n)
+        if pct and not 1 <= n <= 50:
+            raise _Reject(f"value-out-of-bounds({new}, 1-50%)")
+        if not pct and not 0 <= n <= 5:
+            raise _Reject(f"value-out-of-bounds({new}, 0-5)")
+    elif field == "progressDeadlineSeconds":
+        if not (old.isdigit() and new.isdigit()):
+            raise _Reject("value-not-allowed")
+        if not 60 <= int(new) <= 1200:
+            raise _Reject(f"value-out-of-bounds({new}, 60-1200s)")
+    else:
+        if not (VALUE_RE.match(old) and VALUE_RE.match(new)):
+            raise _Reject("value-not-allowed")
 
 PATCH_RE = re.compile(
     r"PATCH_PROPOSAL:\s*\n"
@@ -244,8 +273,7 @@ def _build_patch(m, repo, base, token):
         raise _Reject(f"file-not-allowed({f})")
     if not any(r.match(p) for r in ALLOWED_PATHS):
         raise _Reject(f"path-not-allowed({p})")
-    if not (VALUE_RE.match(old) and VALUE_RE.match(new)):
-        raise _Reject("value-not-allowed")
+    _check_values(p, old, new)
     cur = _gh("GET", f"/repos/{repo}/contents/"
               f"{urllib.parse.quote(f, safe='/')}?ref={base}", token=token)
     text = base64.b64decode(cur["content"]).decode()

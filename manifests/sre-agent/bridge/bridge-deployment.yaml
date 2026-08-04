@@ -1,18 +1,15 @@
 # =============================================================================
-#  holmes-bridge : Alertmanager -> HolmesGPT -> Slack
+#  holmes-bridge : Alertmanager -> HolmesGPT -> Slack   —   VERSION GITOPS
 # -----------------------------------------------------------------------------
-#  Le script est monté depuis un ConfigMap (à créer depuis le repo) — B1 :
-#  remediation.py voyage dans le MÊME ConfigMap :
-#    kubectl -n monitoring create configmap holmes-bridge-script \
-#      --from-file=holmes-bridge.py --from-file=remediation.py \
-#      --dry-run=client -o yaml | kubectl apply -f -
-#  Les diagnostics partent sur un canal Slack DÉDIÉ à l'agent (ex. #sre-agent),
-#  séparé des 2 canaux d'alerte existants. Créer d'abord le webhook entrant
-#  (api.slack.com/apps -> votre app -> Incoming Webhooks -> Add New Webhook,
-#  choisir le nouveau canal), puis le Secret :
+#  Ce fichier vit dans manifests/ai-agent/ du repo et est déployé par
+#  l'Application ArgoCD « ai-agent ». La ConfigMap holmes-bridge-script est
+#  GÉNÉRÉE par kustomize (configMapGenerator, nom hashé) : ne plus la créer
+#  à la main — kustomize réécrit la référence du volume ci-dessous vers le
+#  nom hashé, et tout changement des .py déclenche un rollout automatique.
+#  Les Secrets restent créés à la main (repo public, jamais dans Git) :
 #    kubectl -n monitoring create secret generic holmes-slack-webhook \
-#      --from-literal=slack-url-agent='https://hooks.slack.com/services/T…/B…/…'
-#  Déploiement : kubectl apply -f ai-agent/bridge/bridge-deployment.yaml
+#      --from-literal=slack-url-agent='https://hooks.slack.com/services/…'
+#  (+ github-remediation et grafana-agent-token, cf. commentaires plus bas)
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment

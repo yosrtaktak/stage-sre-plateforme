@@ -1,0 +1,28 @@
+# =============================================================================
+#  Application ArgoCD « ai-agent » — même modèle que dashboards (§2.1 du guide).
+#  À appliquer UNE fois sur la VM : kubectl apply -f application-ai-agent.yaml
+#  Premier sync MANUEL (UI ou `argocd app sync ai-agent`), vérifier le pod,
+#  puis seulement décommenter le bloc `automated` et re-appliquer.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ai-agent
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yosrtaktak/stage-sre-plateforme
+    targetRevision: stage-yosr
+    path: manifests/ai-agent
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+    # Étape 2 (après validation du premier sync manuel) :
+    # automated:
+    #   prune: true      # NB : supprime aussi le PVC holmes-bridge-state si
+    #   selfHeal: true   # l'Application est supprimée (mémoire dédup perdue)
+

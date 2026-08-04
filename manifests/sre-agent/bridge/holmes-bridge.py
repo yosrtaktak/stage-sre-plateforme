@@ -314,8 +314,12 @@ développement va dans les sections 1-3. Puis une ligne vide, puis structure ain
    action corrigera le problème, dis-le au lieu de la recommander.
 RÈGLE PATCH (remédiation par PR) : si — et seulement si — ton correctif
 durable (4b) est un changement de MANIFESTE du repo GitOps portant sur une
-sonde (livenessProbe/readinessProbe), des resources (requests/limits),
-spec.replicas ou terminationGracePeriodSeconds, ajoute EN FIN de diagnostic
+sonde (livenessProbe/readinessProbe/startupProbe), des resources
+(requests/limits : cpu, memory, ephemeral-storage), spec.replicas,
+terminationGracePeriodSeconds, la cadence de rollout
+(spec.strategy.rollingUpdate.maxSurge|maxUnavailable — entier 0-5 ou
+pourcentage 1-50%, jamais 100%) ou spec.progressDeadlineSeconds (60-1200),
+ajoute EN FIN de diagnostic
 un bloc machine-parsable EXACTEMENT sous cette forme (valeurs scalaires
 simples, une ligne par champ) :
 PATCH_PROPOSAL:
