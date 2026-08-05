@@ -2,6 +2,7 @@ namespace: monitoring
 resources:
   - postgres.yaml
   - goalert.yaml
+  - incident-db-api.yaml
 configMapGenerator:
   - name: incident-postgres-init
     files:

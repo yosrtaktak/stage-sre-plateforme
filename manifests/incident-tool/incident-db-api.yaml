@@ -1,0 +1,68 @@
+# =============================================================================
+#  incident-db-api : PostgREST devant incident_db — l'API HTTP de NOTRE base
+#  d'incidents. Raison d'être : le bridge est stdlib pur (pas de driver
+#  PostgreSQL) ; PostgREST expose les tables en REST, le bridge écrit en
+#  urllib comme il parle déjà au RAG. L'incident_adapter ne connaît ni SQL
+#  ni l'outil d'astreinte — HTTP seulement (point 7 de la checklist).
+#  Secret impératif (contient le mot de passe incident) :
+#    kubectl -n monitoring create secret generic incident-db-api \
+#      --from-literal=PGRST_DB_URI='postgres://incident:<INCIDENT>@incident-postgres.monitoring.svc.cluster.local:5432/incident_db'
+#  Accès in-cluster uniquement (ClusterIP, pas d'auth PostgREST : accepté
+#  pour le stage — à durcir par NetworkPolicy si le cluster s'ouvre).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-db-api
+  namespace: monitoring
+  labels:
+    app: incident-db-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: incident-db-api
+  template:
+    metadata:
+      labels:
+        app: incident-db-api
+    spec:
+      containers:
+        - name: postgrest
+          # Épingler un tag précis après le PoC (noter la version au boot).
+          image: postgrest/postgrest:latest
+          env:
+            - name: PGRST_DB_URI
+              valueFrom:
+                secretKeyRef: { name: incident-db-api, key: PGRST_DB_URI }
+            - name: PGRST_DB_SCHEMAS
+              value: "public"
+            # Connexion et rôle = l'utilisateur applicatif `incident`
+            # (propriétaire du schéma) — pas d'anonyme séparé pour le stage.
+            - name: PGRST_DB_ANON_ROLE
+              value: "incident"
+            - name: PGRST_SERVER_PORT
+              value: "3000"
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-db-api
+  namespace: monitoring
+  labels:
+    app: incident-db-api
+spec:
+  selector:
+    app: incident-db-api
+  ports:
+    - port: 3000
+      targetPort: 3000
