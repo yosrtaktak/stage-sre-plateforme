@@ -15,7 +15,6 @@ spec:
   syncPolicy:
     syncOptions:
       - ServerSideApply=true
-    # Après validation du premier sync manuel :
-    # automated:
-    #   prune: true
-    #   selfHeal: true
+    automated:
+      prune: true
+      selfHeal: true
