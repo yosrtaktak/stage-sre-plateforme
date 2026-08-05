@@ -21,8 +21,12 @@ Sécurité — dans CET ordre, l'allow-list AVANT tout appel réseau :
 Le YAML est modifié par navigation d'indentation (pas de PyYAML dans
 python:slim) : recherche déterministe de LA ligne du scalaire ciblé ; toute
 ambiguïté (clé en double, chemin introuvable, ligne non triviale) => refus.
-On ne modifie qu'une valeur scalaire sur une ligne existante — jamais de
-restructuration du fichier, le diff de PR reste d'UNE ligne.
+On ne modifie que des valeurs scalaires sur des lignes existantes — jamais
+de restructuration du fichier. 05/08 : un bloc peut porter jusqu'à
+MAX_CHANGES (5) changements, TOUS dans le même fichier, en répétant le
+quadruplet path/old/new/reason — chaque ligne du diff a SA justification,
+reprise dans un tableau du corps de la PR. Chaque changement passe
+individuellement l'allow-list, les bornes et le stale-old.
 """
 import base64
 import json
@@ -120,10 +124,15 @@ def _check_values(path, old, new):
         if not (VALUE_RE.match(old) and VALUE_RE.match(new)):
             raise _Reject("value-not-allowed")
 
+# 05/08 : le bloc accepte 1 à MAX_CHANGES quadruplets path/old/new/reason —
+# l'ancien format mono-changement est un cas particulier (1 quadruplet).
+MAX_CHANGES = 5
 PATCH_RE = re.compile(
     r"PATCH_PROPOSAL:\s*\n"
     r"\s*file:\s*(?P<file>\S+)\s*\n"
-    r"\s*path:\s*(?P<path>\S+)\s*\n"
+    r"(?P<changes>(?:\s*(?:path|old|new|reason):[ \t]*[^\n]*\n?)+)")
+CHANGE_RE = re.compile(
+    r"path:\s*(?P<path>\S+)\s*\n"
     r"\s*old:\s*(?P<old>\S+)\s*\n"
     r"\s*new:\s*(?P<new>\S+)\s*\n"
     r"\s*reason:\s*(?P<reason>[^\n]+)")
@@ -131,6 +140,19 @@ ROLLBACK_RE = re.compile(
     r"ROLLBACK_PROPOSAL:\s*\n"
     r"\s*commit:\s*(?P<commit>[0-9a-f]{7,40})\s*\n"
     r"\s*reason:\s*(?P<reason>[^\n]+)")
+
+
+def parse_patch(analysis):
+    """(file, [(path, old, new, reason), ...]) ou None. Parseur UNIQUE,
+    utilisé aussi par les gardes du bridge (capacité, cohérence, dédup par
+    cible) — une seule interprétation du bloc pour tout le monde."""
+    m = PATCH_RE.search(analysis)
+    if not m:
+        return None
+    changes = [(c.group("path"), c.group("old"), c.group("new"),
+                c.group("reason").strip())
+               for c in CHANGE_RE.finditer(m.group("changes"))]
+    return (m.group("file"), changes)
 
 
 class _Reject(Exception):
@@ -300,22 +322,52 @@ def _apply(text, dotted, old, new):
 # ---------------------------------------------------------------------------
 #  Construction des changements (patch / rollback)
 # ---------------------------------------------------------------------------
-def _build_patch(m, repo, base, token):
-    f, p = m.group("file"), m.group("path")
-    old, new = m.group("old"), m.group("new")
+def _build_patch(parsed, repo, base, token):
+    """05/08 : 1 à MAX_CHANGES changements dans le MÊME fichier. Chaque
+    changement passe l'allow-list, les bornes et le stale-old ; le diff fait
+    exactement len(changes) lignes ; le corps de la PR justifie CHAQUE ligne
+    (tableau chemin/avant/après/preuve)."""
+    f, changes = parsed
+    if not changes:
+        raise _Reject("patch-unparsable")
+    if len(changes) > MAX_CHANGES:
+        raise _Reject(f"too-many-changes({len(changes)}, max {MAX_CHANGES})")
     if not any(r.match(f) for r in ALLOWED_FILES):
         raise _Reject(f"file-not-allowed({f})")
-    if not any(r.match(p) for r in ALLOWED_PATHS):
-        raise _Reject(f"path-not-allowed({p})")
-    _check_values(p, old, new)
+    for p, old, new, reason in changes:
+        if not any(rx.match(p) for rx in ALLOWED_PATHS):
+            raise _Reject(f"path-not-allowed({p})")
+        _check_values(p, old, new)
+        if not reason:
+            raise _Reject(f"reason-required({p})")
     cur = _gh("GET", f"/repos/{repo}/contents/"
               f"{urllib.parse.quote(f, safe='/')}?ref={base}", token=token)
     text = base64.b64decode(cur["content"]).decode()
-    files = {f: (_apply(text, p, old, new), cur["sha"])}
+    # Application séquentielle : chaque changement modifie SA ligne. Un même
+    # chemin proposé deux fois échoue au 2e passage (stale-old) — les
+    # propositions contradictoires s'auto-refusent.
+    for p, old, new, _ in changes:
+        text = _apply(text, p, old, new)
+    files = {f: (text, cur["sha"])}
     svc = f.split("/")[-2] if "/" in f else f
-    title = f"[sre-agent] {svc} : {p.split('.')[-1]} {old} → {new}"
-    diff = f"`{f}`\n`{p}` : **{old} → {new}**"
-    return files, title, diff, m.group("reason").strip(), "fix"
+    if len(changes) == 1:
+        p, old, new, reason = changes[0]
+        title = f"[sre-agent] {svc} : {p.split('.')[-1]} {old} → {new}"
+    else:
+        fields = ", ".join(dict.fromkeys(
+            p.split(".")[-1] for p, *_ in changes))
+        title = f"[sre-agent] {svc} : {len(changes)} ajustements ({fields})"
+    rows = "\n".join(
+        f"| {i} | `{p}` | `{old}` | `{new}` | {reason} |"
+        for i, (p, old, new, reason) in enumerate(changes, 1))
+    diff = (f"`{f}` — {len(changes)} ligne(s) modifiée(s), chacune justifiée :\n\n"
+            f"| # | Chemin | Avant | Après | Justification (preuve mesurée) |\n"
+            f"|---|--------|-------|-------|--------------------------------|\n"
+            f"{rows}")
+    reason = (changes[0][3] if len(changes) == 1 else
+              f"{len(changes)} ajustements complémentaires sur {svc} — "
+              f"la preuve de chaque ligne est dans le tableau ci-dessus.")
+    return files, title, diff, reason, "fix"
 
 
 def _build_rollback(m, repo, base, token):
@@ -369,7 +421,7 @@ def maybe_open_pr(analysis, labels):
     (None, raison) sinon. Ne lève que sur erreur réseau/API inattendue."""
     if not enabled():
         return None, "disabled"
-    patch = PATCH_RE.search(analysis)
+    patch = parse_patch(analysis)
     rb = ROLLBACK_RE.search(analysis)
     if not patch and not rb:
         return None, "no-proposal"
@@ -402,8 +454,9 @@ def maybe_open_pr(analysis, labels):
         f"### Justification (preuve mesurée)\n{reason}\n\n"
         f"{conf}\n\n"
         f"---\n"
-        f"⚠️ Cette PR a été ouverte automatiquement (champ dans l'allow-list "
-        f"probes/resources/replicas). **Le merge reste une décision "
+        f"⚠️ Cette PR a été ouverte automatiquement (champs dans l'allow-list "
+        f"probes/resources/replicas/rollout, {MAX_CHANGES} lignes max, "
+        f"chaque ligne justifiée ci-dessus). **Le merge reste une décision "
         f"humaine** — branche protégée, CI `validate-manifests` requise. "
         f"Si l'alerte se résout avant merge, la PR sera fermée avec un "
         f"commentaire.\n\n"

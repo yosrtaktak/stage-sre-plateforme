@@ -340,14 +340,23 @@ spec.replicas (1 à 5), terminationGracePeriodSeconds, la cadence de rollout
 (spec.strategy.rollingUpdate.maxSurge|maxUnavailable — entier 0-5 ou
 pourcentage 1-50%, jamais 100%) ou spec.progressDeadlineSeconds (60-1200),
 ajoute EN FIN de diagnostic
-un bloc machine-parsable EXACTEMENT sous cette forme (valeurs scalaires
-simples, une ligne par champ) :
+un bloc machine-parsable EXACTEMENT sous cette forme. Un correctif peut
+porter JUSQU'À 5 changements, TOUS dans le MÊME fichier (une PR = un
+service), en répétant le quadruplet path/old/new/reason pour chaque
+changement — chaque reason cite la preuve mesurée propre à CETTE ligne
+(jamais un reason générique recopié) ; ne groupe que des changements
+COMPLÉMENTAIRES au service du même remède (ex. requests+limits mémoire,
+ou delay+period+failureThreshold d'une même sonde) :
 PATCH_PROPOSAL:
 file: manifests/app/<service>/deployment.yaml
-path: spec.template.spec.containers[0].livenessProbe.timeoutSeconds
+path: spec.template.spec.containers[0].resources.limits.memory
 old: <valeur actuellement dans le repo>
 new: <valeur proposée>
-reason: <une phrase citant la preuve mesurée>
+reason: <preuve mesurée propre à cette ligne>
+path: spec.template.spec.containers[0].resources.requests.memory
+old: <valeur actuelle>
+new: <valeur proposée>
+reason: <preuve mesurée propre à cette ligne>
 Si ton diagnostic conclut « corrélé au commit <sha> » (contexte DERNIERS
 DÉPLOIEMENTS) et que le remède est le retour arrière de ce commit, émets À
 LA PLACE :
@@ -956,52 +965,55 @@ def _capacity_guard(analysis):
     impossible) ; sinon {reason, team} — reason pour le log/la métrique,
     team pour le message Slack d'escalade à l'équipe DevOps."""
     import remediation as r
-    m = r.PATCH_RE.search(analysis)
-    if not m:
+    parsed = r.parse_patch(analysis)
+    if not parsed:
         return None
-    path, old, new, f = (m.group("path"), m.group("old"),
-                         m.group("new"), m.group("file"))
+    f, changes = parsed
     svc = f.split("/")[-2] if "/" in f else f
-    needs = []          # [(res, delta_demandé)]
-    if path.endswith((".cpu", ".memory")):
-        res = "cpu" if path.endswith(".cpu") else "memory"
-        o, n = _qty(old), _qty(new)
-        if o is None or n is None or n <= o:
-            return None                       # baisse/égal : toujours OK
-        needs.append((res, n - o))
-    elif path == "spec.replicas":
-        try:
-            o, n = int(old), int(new)
-        except ValueError:
-            return None
-        if n <= o:
-            return None                       # scale down : toujours OK
-        for res in ("cpu", "memory"):
-            per_pod = _prom_scalar(
-                f'sum(kube_pod_container_resource_requests{{'
-                f'namespace="{APP_NS}",resource="{res}",pod=~"{svc}-.*"}})'
-                f' / count(count by (pod) (kube_pod_container_resource_requests{{'
-                f'namespace="{APP_NS}",resource="{res}",pod=~"{svc}-.*"}}))')
-            if per_pod:
-                needs.append((res, (n - o) * per_pod))
-    else:
-        return None                           # probes, deadlines… : sans objet
-    for res, delta in needs:
+    # 05/08 multi-lignes : les deltas de TOUS les changements du bloc sont
+    # SOMMÉS par ressource — cinq petites hausses qui ensemble ne tiennent
+    # pas sur le nœud sont refusées comme une seule grosse.
+    needs = {}          # res -> delta total demandé
+    fields = []         # champs en hausse (pour le message équipe)
+    for path, old, new, _ in changes:
+        if path.endswith((".cpu", ".memory")):
+            res = "cpu" if path.endswith(".cpu") else "memory"
+            o, n = _qty(old), _qty(new)
+            if o is None or n is None or n <= o:
+                continue                      # baisse/égal : toujours OK
+            needs[res] = needs.get(res, 0.0) + (n - o)
+            fields.append(f"{path.split('.')[-1]} {old}→{new}")
+        elif path == "spec.replicas":
+            try:
+                o, n = int(old), int(new)
+            except ValueError:
+                continue
+            if n <= o:
+                continue                      # scale down : toujours OK
+            for res in ("cpu", "memory"):
+                per_pod = _prom_scalar(
+                    f'sum(kube_pod_container_resource_requests{{'
+                    f'namespace="{APP_NS}",resource="{res}",pod=~"{svc}-.*"}})'
+                    f' / count(count by (pod) (kube_pod_container_resource_requests{{'
+                    f'namespace="{APP_NS}",resource="{res}",pod=~"{svc}-.*"}}))')
+                if per_pod:
+                    needs[res] = needs.get(res, 0.0) + (n - o) * per_pod
+            fields.append(f"replicas {old}→{new}")
+    for res, delta in needs.items():
         free = _node_free(res)
         if free is None:
             log(f"capacity guard: mesure {res} impossible — fail-open")
             continue
         if delta > free * 0.9:                # marge de sécurité 10 %
-            field = path.split(".")[-1]
             return {
                 "reason": (f"capacity-exceeded({res}: +{_fmt_qty(delta, res)}"
                            f" > libre {_fmt_qty(free, res)})"),
                 "team": (
                     f"🧱 *Capacité insuffisante — PR non ouverte.* Le correctif "
-                    f"proposé pour *{svc}* (`{field}: {old} → {new}`) demande "
-                    f"~{_fmt_qty(delta, res)} de {res} en plus, mais le nœud "
-                    f"n'a que ~{_fmt_qty(free, res)} de libre (allocatable − "
-                    f"requests, marge 10 %).\n"
+                    f"proposé pour *{svc}* ({', '.join(fields)}) demande au "
+                    f"total ~{_fmt_qty(delta, res)} de {res} en plus, mais le "
+                    f"nœud n'a que ~{_fmt_qty(free, res)} de libre "
+                    f"(allocatable − requests, marge 10 %).\n"
                     f"Le problème est *capacitaire*, pas applicatif — décision "
                     f"équipe requise : libérer des ressources, agrandir la VM, "
                     f"ou réduire les requests d'autres services. Le diagnostic "
@@ -1017,10 +1029,10 @@ def _service_coherence(analysis, labels):
     mentionné = incohérence LLM -> refus `service-mismatch`, journalisé.
     Retourne None si cohérent (ou rollback/pas de bloc), sinon la raison."""
     import remediation as r
-    m = r.PATCH_RE.search(analysis)
-    if not m:
+    parsed = r.parse_patch(analysis)
+    if not parsed:
         return None
-    f = m.group("file")
+    f = parsed[0]
     svc = f.split("/")[-2] if "/" in f else f
     if svc == "patches":              # manifests/app/patches/<nom>.yaml
         svc = f.split("/")[-1].rsplit(".yaml", 1)[0]
@@ -1073,18 +1085,25 @@ def _maybe_remediate(analysis, labels, fp):
     # (restarts + 2 burn rates) diagnostiquent la même cause racine et
     # ouvraient trois PRs sur le même fichier/chemin. Une PR suivie couvrant
     # déjà cette cible -> on pointe vers elle au lieu d'en ouvrir une autre.
-    pm = remediation.PATCH_RE.search(analysis)
+    pm = remediation.parse_patch(analysis)
     if pm:
-        tgt = (pm.group("file"), pm.group("path"))
+        tgt_file, tgt_paths = pm[0], {c[0] for c in pm[1]}
         with _lock:
-            dup = next((i for i in _prs.values()
-                        if (i.get("file"), i.get("path")) == tgt), None)
+            # chevauchement : une PR suivie couvrant DÉJÀ au moins un des
+            # chemins visés suffit — rétro-compat avec les entrées "path"
+            # (str) d'avant le multi-lignes.
+            dup = next(
+                (i for i in _prs.values()
+                 if i.get("file") == tgt_file
+                 and tgt_paths & set(i.get("paths") or
+                                     ([i["path"]] if i.get("path") else []))),
+                None)
         if dup:
             _metrics["remediation_prs_deduped"] += 1
             log(f"skip PR (cible déjà couverte par PR #{dup['number']})")
             slack_post(
-                f"ℹ️ Correctif identique déjà proposé pour "
-                f"`{tgt[0].split('/')[-2]}` : PR #{dup['number']} "
+                f"ℹ️ Correctif déjà proposé pour "
+                f"`{tgt_file.split('/')[-2]}` : PR #{dup['number']} "
                 f"({dup.get('url', '')}) — pas de nouvelle PR pour "
                 f"*{labels.get('alertname', '?')}*.")
             return
@@ -1113,8 +1132,8 @@ def _maybe_remediate(analysis, labels, fp):
                         "url": res["url"], "title": res.get("title", ""),
                         "alert": labels.get("alertname", "?"),
                         # cible du patch — clé de la dédup par cible
-                        "file": pm.group("file") if pm else "",
-                        "path": pm.group("path") if pm else "",
+                        "file": pm[0] if pm else "",
+                        "paths": sorted({c[0] for c in pm[1]}) if pm else [],
                         "verdict": analysis.strip().split("\n")[0][:200]}
             _save_prs()
         slack_post(
