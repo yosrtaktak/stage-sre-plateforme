@@ -140,6 +140,9 @@ _metrics = {
     # Garde de capacité (05/08) : PR refusée car le nœud n'a pas la place —
     # le correctif est escaladé à l'équipe comme problème CAPACITAIRE.
     "remediation_capacity_refused": 0,
+    # Dédup par cible (05/08) : plusieurs alertes, même cause racine -> une
+    # seule PR, les suivantes pointent vers elle.
+    "remediation_prs_deduped": 0,
     # B4 : Change Failure Rate DORA = degraded / (verified + degraded).
     "syncs_verified": 0, "syncs_degraded": 0,
     # Boucle fermée : remèdes de l'agent mergés puis vérifiés (ou non) par B4.
@@ -162,6 +165,7 @@ def _metrics_text():
               "deploy_syncs_annotated", "argocd_read_errors",
               "remediation_prs_opened", "remediation_rejected",
               "remediation_prs_closed", "remediation_capacity_refused",
+              "remediation_prs_deduped",
               "syncs_verified", "syncs_degraded",
               "remedies_confirmed", "remedies_infirmed"):
         lines.append(f"holmes_bridge_{k}_total {m[k]}")
@@ -272,8 +276,10 @@ d) une recherche dans la mémoire des incidents (outil
    résultats de score < 0,6. Si un incident passé dépasse 0,7 : dis
    explicitement si c'est une récidive, et vérifie si le remède qui avait
    fonctionné s'applique encore — cite-le alors dans tes actions avec sa
-   date. Les documents de type "postmortem" sont les plus fiables (leur
-   cause a été confirmée après coup) ; les documents de type
+   date. Les documents de type "postmortem" sont plus fiables que les
+   diagnostics à chaud — et parmi eux, ceux marqués validés par l'équipe
+   (champ validated: true) priment sur les post-mortems automatiques dont
+   la cause n'a été confirmée par personne ; les documents de type
    "remede_confirme" sont la référence MAXIMALE : leur remède a été appliqué
    par une PR mergée PUIS vérifié stable par la mesure post-déploiement —
    s'il en existe un applicable au cas présent, propose ce remède en
@@ -329,8 +335,8 @@ développement va dans les sections 1-3. Puis une ligne vide, puis structure ain
 RÈGLE PATCH (remédiation par PR) : si — et seulement si — ton correctif
 durable (4b) est un changement de MANIFESTE du repo GitOps portant sur une
 sonde (livenessProbe/readinessProbe/startupProbe), des resources
-(requests/limits : cpu, memory, ephemeral-storage), spec.replicas,
-terminationGracePeriodSeconds, la cadence de rollout
+(requests/limits : cpu, memory, ephemeral-storage — baisse max 50%),
+spec.replicas (1 à 5), terminationGracePeriodSeconds, la cadence de rollout
 (spec.strategy.rollingUpdate.maxSurge|maxUnavailable — entier 0-5 ou
 pourcentage 1-50%, jamais 100%) ou spec.progressDeadlineSeconds (60-1200),
 ajoute EN FIN de diagnostic
@@ -798,12 +804,44 @@ def _confirm_remedies(rev, stable, detail=""):
             _save_prs()
 
 
+def _health_degradations(t0, t1):
+    """05/08 — B4 au-delà des SLO : un sync peut casser sans brûler de budget
+    d'erreur (pod Pending, CrashLoop sur un service sans SLO, réplicas
+    indisponibles alors que le trafic est servi par les survivants). Trois
+    signaux kube-state-metrics comparés avant/après la fenêtre. Liste des
+    dégradations détectées ; [] si RAS ou mesure impossible (fail-open
+    journalisé — le verdict burn rate reste rendu)."""
+    out = []
+    ns = f"{APP_NS}|monitoring"
+    try:
+        for label, expr in (
+                ("pods Pending",
+                 f'sum(kube_pod_status_phase{{phase="Pending",'
+                 f'namespace=~"{ns}"}})'),
+                ("réplicas indisponibles",
+                 f'sum(kube_deployment_status_replicas_unavailable{{'
+                 f'namespace=~"{ns}"}})')):
+            b = _prom_scalar(expr, at=t0) or 0.0
+            a = _prom_scalar(expr, at=t1) or 0.0
+            if a > b:
+                out.append(f"{label} {b:.0f}→{a:.0f}")
+        restarts = _prom_scalar(
+            f'sum(increase(kube_pod_container_status_restarts_total{{'
+            f'namespace=~"{ns}"}}[{int(t1 - t0)}s]))', at=t1)
+        if restarts is not None and restarts >= 3:
+            out.append(f"{restarts:.0f} restarts de conteneurs sur la fenêtre")
+    except Exception as e:
+        log(f"health check post-sync: mesure impossible (fail-open): {e}")
+    return out
+
+
 def _verify_sync(rev, pending):
-    """Compare les burn rates avant/après la fenêtre post-sync. Stable ->
-    ✅ Slack ; dégradé -> enquête bridge fingerprint sync-<sha> (dédup,
-    plafond et circuit breaker s'appliquent), qui peut aboutir à une PR de
-    rollback via B1. Dans les deux cas, si ce sync est le merge d'une PR de
-    l'agent, le verdict confirme ou infirme le remède (_confirm_remedies)."""
+    """Compare burn rates ET signaux de santé K8s (05/08) avant/après la
+    fenêtre post-sync. Stable -> ✅ Slack ; dégradé -> enquête bridge
+    fingerprint sync-<sha> (dédup, plafond et circuit breaker s'appliquent),
+    qui peut aboutir à une PR de rollback via B1. Dans les deux cas, si ce
+    sync est le merge d'une PR de l'agent, le verdict confirme ou infirme le
+    remède (_confirm_remedies)."""
     t_sync, apps = pending["t"], ",".join(pending["apps"])
     names = _burnrate_names()
     before = _burnrate_snapshot(t_sync, names)
@@ -815,21 +853,32 @@ def _verify_sync(rev, pending):
         # qu'avant le sync (x2, plancher 0.05 pour ignorer le bruit à ~0)
         if aft > 1.0 and aft > 2 * max(bef, 0.05):
             degraded.append((name, bef, aft))
-    if not degraded:
+    kdeg = _health_degradations(t_sync, t_sync + VERIFY_AFTER_S)
+    if not degraded and not kdeg:
         _metrics["syncs_verified"] += 1
-        slack_post(f"✅ Sync {rev[:7]} vérifié ({apps}) : burn rates stables "
-                   f"sur les {VERIFY_AFTER_S // 60} min post-déploiement.")
+        slack_post(f"✅ Sync {rev[:7]} vérifié ({apps}) : burn rates et "
+                   f"santé K8s stables sur les {VERIFY_AFTER_S // 60} min "
+                   f"post-déploiement.")
         log(f"sync {rev[:7]} vérifié : stable")
         _confirm_remedies(rev, stable=True)
         return
     _metrics["syncs_degraded"] += 1
-    worst = max(degraded, key=lambda d: d[2])
-    detail = ", ".join(f"{n} {b:.2f}→{a:.2f}" for n, b, a in degraded)
+    detail = ", ".join(
+        [f"{n} {b:.2f}→{a:.2f}" for n, b, a in degraded] + kdeg)
     _confirm_remedies(rev, stable=False, detail=detail)
-    slack_post(f"⚠️ Sync {rev[:7]} ({apps}) : burn rate dégradé "
-               f"post-déploiement ({detail}) — enquête lancée.")
+    slack_post(f"⚠️ Sync {rev[:7]} ({apps}) : dégradation post-déploiement "
+               f"({detail}) — enquête lancée.")
     log(f"sync {rev[:7]} dégradé : {detail}")
-    slo = worst[0].split(":")[1] if worst[0].count(":") >= 2 else "infra"
+    if degraded:
+        worst = max(degraded, key=lambda d: d[2])
+        slo = worst[0].split(":")[1] if worst[0].count(":") >= 2 else "infra"
+        cause = (f"Le burn rate {worst[0]} est passé de {worst[1]:.2f} à "
+                 f"{worst[2]:.2f}")
+    else:
+        # 05/08 : dégradation détectée par les signaux K8s seuls — le sync a
+        # cassé quelque chose que les SLO ne voient pas (Pending, restarts…)
+        slo = "infra"
+        cause = f"Signaux de santé K8s dégradés ({', '.join(kdeg)})"
     handle([{
         "status": "firing",
         "fingerprint": f"sync-{rev[:7]}",
@@ -838,8 +887,7 @@ def _verify_sync(rev, pending):
         "labels": {"alertname": "SyncDegradedAfterDeploy",
                    "severity": "warning", "slo": slo},
         "annotations": {"description": (
-            f"Le burn rate {worst[0]} est passé de {worst[1]:.2f} à "
-            f"{worst[2]:.2f} dans les {VERIFY_AFTER_S // 60} min suivant le "
+            f"{cause} dans les {VERIFY_AFTER_S // 60} min suivant le "
             f"sync Argo CD {rev[:7]} (apps : {apps}). Vérifie si la "
             f"dégradation est corrélée à ce déploiement ; si le commit est "
             f"en cause et que le remède est le retour arrière, propose "
@@ -887,8 +935,8 @@ def _fmt_qty(x, res):
     return f"{x / 1024 ** 2:.0f}Mi" if x < 1024 ** 3 else f"{x / 1024 ** 3:.1f}Gi"
 
 
-def _prom_scalar(expr):
-    res = _prom_query(expr)
+def _prom_scalar(expr, at=None):
+    res = _prom_query(expr, at=at)
     return float(res[0]["value"][1]) if res else None
 
 
@@ -961,6 +1009,29 @@ def _capacity_guard(analysis):
     return None
 
 
+def _service_coherence(analysis, labels):
+    """Garde de cohérence (05/08) : le service ciblé par le PATCH doit être
+    celui que le diagnostic incrimine — présent dans les labels de l'alerte
+    ou dans le CORPS du diagnostic (hors bloc PATCH_PROPOSAL, sinon le
+    `file:` du bloc se validerait lui-même). Un patch sur un service jamais
+    mentionné = incohérence LLM -> refus `service-mismatch`, journalisé.
+    Retourne None si cohérent (ou rollback/pas de bloc), sinon la raison."""
+    import remediation as r
+    m = r.PATCH_RE.search(analysis)
+    if not m:
+        return None
+    f = m.group("file")
+    svc = f.split("/")[-2] if "/" in f else f
+    if svc == "patches":              # manifests/app/patches/<nom>.yaml
+        svc = f.split("/")[-1].rsplit(".yaml", 1)[0]
+    body = analysis.split("PATCH_PROPOSAL:")[0]
+    hay = (" ".join(str(v) for v in labels.values()) + " " + body).lower()
+    if svc.lower() in hay:
+        return None
+    return (f"service-mismatch({svc} absent du diagnostic et des labels "
+            f"de l'alerte {labels.get('alertname', '?')})")
+
+
 def _maybe_remediate(analysis, labels, fp):
     """Si le diagnostic contient un PATCH/ROLLBACK_PROPOSAL, le module
     remediation (allow-list en dur) tente d'ouvrir la PR. Bornes : 1 PR par
@@ -987,6 +1058,36 @@ def _maybe_remediate(analysis, labels, fp):
         log(f"remediation refusée ({guard['reason']})")
         slack_post(guard["team"])
         return
+    # Garde de cohérence, même placement : avant l'empreinte |pr, pour
+    # qu'une enquête future puisse proposer un patch sur le BON service.
+    try:
+        mismatch = _service_coherence(analysis, labels)
+    except Exception as e:
+        mismatch = None
+        log(f"coherence check error (fail-open): {e}")
+    if mismatch:
+        _metrics["remediation_rejected"] += 1
+        log(f"remediation refusée ({mismatch})")
+        return
+    # Dédup par CIBLE (05/08, vécu au test T6) : trois alertes différentes
+    # (restarts + 2 burn rates) diagnostiquent la même cause racine et
+    # ouvraient trois PRs sur le même fichier/chemin. Une PR suivie couvrant
+    # déjà cette cible -> on pointe vers elle au lieu d'en ouvrir une autre.
+    pm = remediation.PATCH_RE.search(analysis)
+    if pm:
+        tgt = (pm.group("file"), pm.group("path"))
+        with _lock:
+            dup = next((i for i in _prs.values()
+                        if (i.get("file"), i.get("path")) == tgt), None)
+        if dup:
+            _metrics["remediation_prs_deduped"] += 1
+            log(f"skip PR (cible déjà couverte par PR #{dup['number']})")
+            slack_post(
+                f"ℹ️ Correctif identique déjà proposé pour "
+                f"`{tgt[0].split('/')[-2]}` : PR #{dup['number']} "
+                f"({dup.get('url', '')}) — pas de nouvelle PR pour "
+                f"*{labels.get('alertname', '?')}*.")
+            return
     prfp = fp + "|pr"
     with _lock:
         if prfp in _seen:
@@ -1011,6 +1112,9 @@ def _maybe_remediate(analysis, labels, fp):
             _prs[fp] = {"t": time.time(), "number": res["number"],
                         "url": res["url"], "title": res.get("title", ""),
                         "alert": labels.get("alertname", "?"),
+                        # cible du patch — clé de la dédup par cible
+                        "file": pm.group("file") if pm else "",
+                        "path": pm.group("path") if pm else "",
                         "verdict": analysis.strip().split("\n")[0][:200]}
             _save_prs()
         slack_post(
@@ -1236,6 +1340,18 @@ def investigate(alert, postmortem=False):
              else "investigations_posted"] += 1
     log(f"{'postmortem' if postmortem else 'investigation'} posted "
         f"for {labels.get('alertname')}")
+    # 05/08 — validation humaine : un post-mortem AUTO n'est qu'une hypothèse
+    # tant que l'équipe ne l'a pas confirmé. Le rappel donne la clé exacte
+    # (« alerte — date ») à passer au /validate du RAG ; un document validé
+    # gagne un cran de fiabilité dans les enquêtes futures (VALIDATED_BOOST).
+    if postmortem:
+        slack_post(
+            f"🔎 Cette cause racine est une hypothèse de l'agent : si "
+            f"l'équipe la confirme, validez-la — clé : "
+            f"`{labels.get('alertname', '?')} — {when}` "
+            f"(POST /validate du service postmortem-rag, cf. "
+            f"PLAN-TEST-REMEDIATION §T23). Un post-mortem validé pèse plus "
+            f"lourd que les post-mortems auto dans les enquêtes futures.")
     # B1 : correctif durable de type manifeste -> pull request (le diagnostic
     # Slack est déjà parti ; la PR est un canal de sortie supplémentaire).
     if not postmortem:

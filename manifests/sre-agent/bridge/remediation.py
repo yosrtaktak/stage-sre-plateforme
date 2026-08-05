@@ -61,6 +61,21 @@ ALLOWED_PATHS = (
 VALUE_RE = re.compile(r"^[0-9]+(m|Ki|Mi|Gi)?$")
 # maxSurge/maxUnavailable acceptent aussi les pourcentages ("25%").
 PCT_RE = re.compile(r"^([0-9]{1,3})(%)?$")
+# Planchers absolus des ressources (05/08) : en dessous, le conteneur ne peut
+# tout simplement pas fonctionner — un sous-dimensionnement brutal crashe le
+# service aussi sûrement qu'un OOM.
+RESOURCE_FLOORS = {"cpu": 0.01, "memory": 16 * 1024.0 ** 2,
+                   "ephemeral-storage": 16 * 1024.0 ** 2}
+
+
+def _qty_units(v):
+    """Quantité k8s -> unité comparable (cpu en cores, mémoire en octets)."""
+    m = re.match(r"^([0-9]+)(m|Ki|Mi|Gi)?$", v)
+    if not m:
+        return None
+    n, u = int(m.group(1)), m.group(2)
+    return {None: float(n), "m": n / 1000.0, "Ki": n * 1024.0,
+            "Mi": n * 1024.0 ** 2, "Gi": n * 1024.0 ** 3}[u]
 
 
 def _check_values(path, old, new):
@@ -82,6 +97,25 @@ def _check_values(path, old, new):
             raise _Reject("value-not-allowed")
         if not 60 <= int(new) <= 1200:
             raise _Reject(f"value-out-of-bounds({new}, 60-1200s)")
+    elif field == "replicas":
+        # 05/08 : jamais 0 (extinction du service via une PR plausible) ni
+        # d'emballement — la garde de capacité du bridge borne déjà le haut
+        # par la mesure, ceci est le garde-fou statique.
+        if not (old.isdigit() and new.isdigit()):
+            raise _Reject("value-not-allowed")
+        if not 1 <= int(new) <= 5:
+            raise _Reject(f"value-out-of-bounds({new}, 1-5)")
+    elif field in ("cpu", "memory", "ephemeral-storage"):
+        if not (VALUE_RE.match(old) and VALUE_RE.match(new)):
+            raise _Reject("value-not-allowed")
+        o, n = _qty_units(old), _qty_units(new)
+        # 05/08 : une BAISSE ne va jamais plus loin que la moitié, ni sous le
+        # plancher absolu. (Une réduction légitime plus forte reste possible
+        # pour l'humain — mais pas via une PR automatique de l'agent.)
+        if n < o and (n < o / 2 or n < RESOURCE_FLOORS[field]):
+            raise _Reject(
+                f"value-out-of-bounds({new}, baisse max 50% de {old} "
+                f"et >= plancher)")
     else:
         if not (VALUE_RE.match(old) and VALUE_RE.match(new)):
             raise _Reject("value-not-allowed")
@@ -304,6 +338,16 @@ def _build_rollback(m, repo, base, token):
         cur = _gh("GET", f"/repos/{repo}/contents/"
                   f"{urllib.parse.quote(fn, safe='/')}?ref={base}",
                   token=token)
+        # 05/08 — anti-écrasement (équivalent du stale-old des patchs) : si le
+        # fichier a été modifié DEPUIS le commit incriminé, le revert
+        # annulerait silencieusement ces changements intermédiaires -> refus,
+        # le retour arrière devient une décision humaine.
+        at_commit = _gh("GET", f"/repos/{repo}/contents/"
+                        f"{urllib.parse.quote(fn, safe='/')}?ref={sha}",
+                        token=token)
+        if base64.b64decode(cur["content"]) != \
+                base64.b64decode(at_commit["content"]):
+            raise _Reject(f"rollback-stale({fn} modifié depuis {sha[:7]})")
         files[fn] = (base64.b64decode(prev["content"]).decode(), cur["sha"])
     if not files:
         raise _Reject("rollback-no-allowed-files")
