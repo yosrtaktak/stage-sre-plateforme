@@ -137,6 +137,9 @@ _metrics = {
     # B1 : PRs de remédiation ouvertes / refus allow-list / fermetures auto.
     "remediation_prs_opened": 0, "remediation_rejected": 0,
     "remediation_prs_closed": 0,
+    # Garde de capacité (05/08) : PR refusée car le nœud n'a pas la place —
+    # le correctif est escaladé à l'équipe comme problème CAPACITAIRE.
+    "remediation_capacity_refused": 0,
     # B4 : Change Failure Rate DORA = degraded / (verified + degraded).
     "syncs_verified": 0, "syncs_degraded": 0,
     # Boucle fermée : remèdes de l'agent mergés puis vérifiés (ou non) par B4.
@@ -158,7 +161,8 @@ def _metrics_text():
               "annotations_posted", "circuit_opened",
               "deploy_syncs_annotated", "argocd_read_errors",
               "remediation_prs_opened", "remediation_rejected",
-              "remediation_prs_closed", "syncs_verified", "syncs_degraded",
+              "remediation_prs_closed", "remediation_capacity_refused",
+              "syncs_verified", "syncs_degraded",
               "remedies_confirmed", "remedies_infirmed"):
         lines.append(f"holmes_bridge_{k}_total {m[k]}")
     for lvl in ("haute", "moyenne", "basse"):
@@ -284,6 +288,16 @@ e) la valeur ACTUELLE et l'historique 1 h de la recording rule de burn rate
    mesure (erreurs passées encore dans la fenêtre, trafic nul, fenêtre
    différente). Il est INTERDIT d'inventer un mécanisme non mesuré : un burn
    rate ne mesure QUE les erreurs, jamais la capacité ni la latence.
+f) SI ton correctif envisage d'AUGMENTER des resources (requests/limits) ou
+   des réplicas : vérifie d'abord la capacité restante du nœud (mono-node !)
+   avec PromQL — kube_node_status_allocatable moins
+   sum(kube_pod_container_resource_requests), pour cpu ET memory — et cite
+   les valeurs. Si l'augmentation ne tient pas dans la capacité restante,
+   N'ÉMETS PAS de PATCH_PROPOSAL : dis explicitement que le nœud est saturé,
+   chiffre le manque, et recommande une action d'infrastructure (agrandir la
+   VM, libérer des ressources, arbitrer les requests) — c'est une décision
+   d'équipe, pas un patch. (Le bridge refuse de toute façon en dernier
+   ressort toute PR qui dépasse la capacité mesurée — garde codée.)
 RÈGLE ABSOLUE : ne recommande JAMAIS à l'humain une action d'inspection
 (« vérifier les logs », « analyser les métriques ») que tes outils te
 permettent de faire toi-même — fais-la pendant l'enquête et cite le résultat.
@@ -843,6 +857,110 @@ def _safe_verify(rev, pending):
 # --------------------------------------------------------------------------
 #  B1 : Remediation-as-PR — orchestration côté bridge
 # --------------------------------------------------------------------------
+#  Garde de capacité (05/08) : toute proposition qui AUGMENTE la consommation
+#  (requests/limits cpu-mémoire, réplicas) est confrontée à la capacité
+#  restante du nœud AVANT l'ouverture de PR. Comme l'allow-list, la garantie
+#  est dans le CODE, pas dans le prompt. Si ça ne rentre pas : pas de PR —
+#  le problème n'est plus applicatif mais capacitaire, donc escaladé à
+#  l'équipe via Slack avec les chiffres. En cas de mesure impossible
+#  (Prometheus KO, métrique absente), fail-open journalisé : la PR s'ouvre,
+#  l'humain reste le filtre final.
+APP_NS = os.environ.get("APP_NAMESPACE", "online-boutique")
+_QTY_RE = re.compile(r"^([0-9]+)(m|Ki|Mi|Gi)?$")
+
+
+def _qty(v):
+    """Quantité k8s -> unités kube-state-metrics (cpu en cores, mémoire en
+    octets). None si non mesurable (les seules formes admises par
+    l'allow-list sont couvertes)."""
+    m = _QTY_RE.match(v)
+    if not m:
+        return None
+    n, u = int(m.group(1)), m.group(2)
+    return {None: float(n), "m": n / 1000.0, "Ki": n * 1024.0,
+            "Mi": n * 1024.0 ** 2, "Gi": n * 1024.0 ** 3}[u]
+
+
+def _fmt_qty(x, res):
+    if res == "cpu":
+        return f"{x * 1000:.0f}m"
+    return f"{x / 1024 ** 2:.0f}Mi" if x < 1024 ** 3 else f"{x / 1024 ** 3:.1f}Gi"
+
+
+def _prom_scalar(expr):
+    res = _prom_query(expr)
+    return float(res[0]["value"][1]) if res else None
+
+
+def _node_free(res):
+    """Capacité restante du nœud : allocatable − somme des requests. None si
+    la mesure échoue (fail-open, journalisé par l'appelant)."""
+    alloc = _prom_scalar(f'sum(kube_node_status_allocatable{{resource="{res}"}})')
+    reserved = _prom_scalar(
+        f'sum(kube_pod_container_resource_requests{{resource="{res}"}})')
+    if alloc is None or reserved is None:
+        return None
+    return alloc - reserved
+
+
+def _capacity_guard(analysis):
+    """None si la proposition tient sur le nœud (ou baisse, ou mesure
+    impossible) ; sinon {reason, team} — reason pour le log/la métrique,
+    team pour le message Slack d'escalade à l'équipe DevOps."""
+    import remediation as r
+    m = r.PATCH_RE.search(analysis)
+    if not m:
+        return None
+    path, old, new, f = (m.group("path"), m.group("old"),
+                         m.group("new"), m.group("file"))
+    svc = f.split("/")[-2] if "/" in f else f
+    needs = []          # [(res, delta_demandé)]
+    if path.endswith((".cpu", ".memory")):
+        res = "cpu" if path.endswith(".cpu") else "memory"
+        o, n = _qty(old), _qty(new)
+        if o is None or n is None or n <= o:
+            return None                       # baisse/égal : toujours OK
+        needs.append((res, n - o))
+    elif path == "spec.replicas":
+        try:
+            o, n = int(old), int(new)
+        except ValueError:
+            return None
+        if n <= o:
+            return None                       # scale down : toujours OK
+        for res in ("cpu", "memory"):
+            per_pod = _prom_scalar(
+                f'sum(kube_pod_container_resource_requests{{'
+                f'namespace="{APP_NS}",resource="{res}",pod=~"{svc}-.*"}})'
+                f' / count(count by (pod) (kube_pod_container_resource_requests{{'
+                f'namespace="{APP_NS}",resource="{res}",pod=~"{svc}-.*"}}))')
+            if per_pod:
+                needs.append((res, (n - o) * per_pod))
+    else:
+        return None                           # probes, deadlines… : sans objet
+    for res, delta in needs:
+        free = _node_free(res)
+        if free is None:
+            log(f"capacity guard: mesure {res} impossible — fail-open")
+            continue
+        if delta > free * 0.9:                # marge de sécurité 10 %
+            field = path.split(".")[-1]
+            return {
+                "reason": (f"capacity-exceeded({res}: +{_fmt_qty(delta, res)}"
+                           f" > libre {_fmt_qty(free, res)})"),
+                "team": (
+                    f"🧱 *Capacité insuffisante — PR non ouverte.* Le correctif "
+                    f"proposé pour *{svc}* (`{field}: {old} → {new}`) demande "
+                    f"~{_fmt_qty(delta, res)} de {res} en plus, mais le nœud "
+                    f"n'a que ~{_fmt_qty(free, res)} de libre (allocatable − "
+                    f"requests, marge 10 %).\n"
+                    f"Le problème est *capacitaire*, pas applicatif — décision "
+                    f"équipe requise : libérer des ressources, agrandir la VM, "
+                    f"ou réduire les requests d'autres services. Le diagnostic "
+                    f"reste valable ; ce correctif est en attente de capacité.")}
+    return None
+
+
 def _maybe_remediate(analysis, labels, fp):
     """Si le diagnostic contient un PATCH/ROLLBACK_PROPOSAL, le module
     remediation (allow-list en dur) tente d'ouvrir la PR. Bornes : 1 PR par
@@ -857,6 +975,18 @@ def _maybe_remediate(analysis, labels, fp):
         return
     if not remediation.enabled():
         return                      # Secret github-remediation absent
+    # Garde de capacité AVANT de consommer l'empreinte |pr : un refus
+    # capacitaire n'interdit pas à une enquête future de proposer autre chose.
+    try:
+        guard = _capacity_guard(analysis)
+    except Exception as e:
+        guard = None
+        log(f"capacity guard error (fail-open): {e}")
+    if guard:
+        _metrics["remediation_capacity_refused"] += 1
+        log(f"remediation refusée ({guard['reason']})")
+        slack_post(guard["team"])
+        return
     prfp = fp + "|pr"
     with _lock:
         if prfp in _seen:
