@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: incident-tool
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yosrtaktak/stage-sre-plateforme
+    targetRevision: stage-yosr
+    path: manifests/incident-tool
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+    # Après validation du premier sync manuel :
+    # automated:
+    #   prune: true
+    #   selfHeal: true

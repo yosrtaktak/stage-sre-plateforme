@@ -1,0 +1,76 @@
+# =============================================================================
+#  GoAlert — outil d'astreinte, VOLONTAIREMENT remplaçable (checklist anti
+#  lock-in) : le Service s'appelle `incident-tool` (pas goalert) — c'est LUI
+#  que référencent Alertmanager et le futur incident_adapter. Migrer vers un
+#  autre outil = changer le selector de ce Service (+ l'URL d'intégration),
+#  rien d'autre dans la plateforme.
+#  Secret impératif (contient le mot de passe DB) :
+#    kubectl -n monitoring create secret generic incident-tool \
+#      --from-literal=GOALERT_DB_URL='postgres://goalert:<pwd>@incident-postgres.monitoring.svc.cluster.local:5432/goalert?sslmode=disable'
+#  Au premier démarrage, GoAlert applique lui-même ses migrations de schéma
+#  dans SA database ; s'il démarre avant Postgres, il crash-loop quelques
+#  secondes puis converge (backoff K8s) — pas d'initContainer nécessaire.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goalert
+  namespace: monitoring
+  labels:
+    app: goalert
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: goalert
+  template:
+    metadata:
+      labels:
+        app: goalert
+    spec:
+      containers:
+        - name: goalert
+          # Épingler un tag précis après le PoC (latest = démarrage rapide,
+          # mais reproductibilité faible — noter la version affichée au boot).
+          image: goalert/goalert:latest
+          env:
+            - name: GOALERT_DB_URL
+              valueFrom:
+                secretKeyRef: { name: incident-tool, key: GOALERT_DB_URL }
+            - name: GOALERT_LISTEN
+              value: ":8081"
+            # URL vue par les navigateurs et les liens de notification —
+            # le NodePort du Service incident-tool.
+            - name: GOALERT_PUBLIC_URL
+              value: "http://10.0.2.15:32082"
+          ports:
+            - containerPort: 8081
+          readinessProbe:
+            httpGet: { path: /health, port: 8081 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8081 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+---
+# Le nom NEUTRE — point 11 de la checklist. Tout le reste de la plateforme
+# parle à `incident-tool`, jamais à « goalert ».
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-tool
+  namespace: monitoring
+  labels:
+    app: goalert
+spec:
+  type: NodePort
+  selector:
+    app: goalert
+  ports:
+    - port: 8081
+      targetPort: 8081
+      nodePort: 32082

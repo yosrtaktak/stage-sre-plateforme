@@ -1,0 +1,8 @@
+namespace: monitoring
+resources:
+  - postgres.yaml
+  - goalert.yaml
+configMapGenerator:
+  - name: incident-postgres-init
+    files:
+      - init-databases.sh

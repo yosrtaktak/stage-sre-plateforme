@@ -1,0 +1,99 @@
+# =============================================================================
+#  incident-postgres : UNE instance PostgreSQL, DEUX databases logiques
+#  (compromis mono-node du point 4 de la checklist) :
+#    - goalert     : l'état de GoAlert — JAMAIS lu/écrit par nos composants
+#    - incident_db : NOTRE vérité (incidents, timeline, acks, MTTA/MTTR) —
+#                    survit à toute migration d'outil (pg_dump et on part)
+#  Credentials séparés par database ; le Secret incident-postgres est
+#  impératif (repo public) :
+#    kubectl -n monitoring create secret generic incident-postgres \
+#      --from-literal=POSTGRES_PASSWORD='<superuser>' \
+#      --from-literal=GOALERT_DB_PASSWORD='<pwd goalert>' \
+#      --from-literal=INCIDENT_DB_PASSWORD='<pwd incident>'
+#  Le script d'init (ConfigMap kustomize) ne s'exécute qu'au PREMIER
+#  démarrage (PGDATA vide) — c'est le comportement de l'image postgres.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-postgres
+  namespace: monitoring
+  labels:
+    app: incident-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # un seul PVC RWO : jamais deux pods en parallèle
+  selector:
+    matchLabels:
+      app: incident-postgres
+  template:
+    metadata:
+      labels:
+        app: incident-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: incident-postgres, key: POSTGRES_PASSWORD }
+            - name: GOALERT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: incident-postgres, key: GOALERT_DB_PASSWORD }
+            - name: INCIDENT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: incident-postgres, key: INCIDENT_DB_PASSWORD }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 250m, memory: 384Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: incident-postgres-data
+        - name: init
+          configMap:
+            name: incident-postgres-init
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: incident-postgres-data
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-postgres
+  namespace: monitoring
+  labels:
+    app: incident-postgres
+spec:
+  selector:
+    app: incident-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
