@@ -1,12 +1,16 @@
 # =============================================================================
-#  postmortem-rag : base vectorielle des incidents (RAG agentique)
+#  postmortem-rag : base vectorielle des incidents — VERSION GITOPS
 # -----------------------------------------------------------------------------
-#  Le script est monté depuis un ConfigMap :
-#    kubectl -n monitoring create configmap postmortem-rag-script \
-#      --from-file=ai-agent/rag/postmortem-rag.py --dry-run=client -o yaml | kubectl apply -f -
-#  Alimenté automatiquement par le bridge (env RAG_URL) ; interrogé par
-#  HolmesGPT via le toolset custom "incidents/search" (holmes-values.yaml).
-#  Embeddings : API Gemini (même Secret holmes-llm que l'agent).
+#  Ce fichier vit dans manifests/sre-agent/rag/ et est déployé par
+#  l'Application ArgoCD « ai-rag ». La ConfigMap postmortem-rag-script est
+#  GÉNÉRÉE par kustomize (configMapGenerator, nom hashé) : ne plus la créer
+#  à la main — tout changement du .py déclenche un rollout automatique.
+#  Alimenté par le bridge (env RAG_URL) ; interrogé par HolmesGPT via le
+#  toolset custom "incidents/search". Secrets (holmes-llm, qdrant-cloud) :
+#  toujours créés à la main, jamais dans le repo (public).
+#  05/08 : le cache passe d'emptyDir à un PVC — la validation humaine
+#  (/validate) cherche dans le cache local, qui doit survivre aux rollouts
+#  (désormais fréquents avec le hash de ConfigMap).
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -90,7 +94,23 @@ spec:
           configMap:
             name: postmortem-rag-script
         - name: data
-          emptyDir: {}
+          # 05/08 : PVC au lieu d'emptyDir — le cache (documents + flags de
+          # validation humaine + file d'attente Qdrant) survit aux rollouts
+          # automatiques déclenchés par chaque changement du script.
+          persistentVolumeClaim:
+            claimName: postmortem-rag-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postmortem-rag-data
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path     # provisioner par défaut de K3s
+  resources:
+    requests:
+      storage: 200Mi
 ---
 apiVersion: v1
 kind: Service

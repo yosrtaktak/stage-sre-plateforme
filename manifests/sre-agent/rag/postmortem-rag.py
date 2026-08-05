@@ -182,6 +182,12 @@ def _payload(title, text, tags, meta):
         # Correctif G3 : confiance auto-déclarée par l'agent (haute/moyenne/
         # basse) — utilisée comme malus de ranking (anti auto-empoisonnement).
         "confidence": m.get("confidence", ""),
+        # 05/08 — validation humaine : un post-mortem AUTO n'a été confirmé
+        # par personne ; quand l'équipe valide la cause (endpoint /validate),
+        # le document gagne un cran de fiabilité au ranking. Hiérarchie :
+        # remede_confirme (preuve mesurée B4) > postmortem validé > auto.
+        "validated": bool(m.get("validated", False)),
+        "validated_by": m.get("validated_by", ""),
         "verdict": (m.get("verdict") or first)[:300],
         "tags": tags,
         "text": text,
@@ -273,6 +279,10 @@ CONFIRMED_BOOST = 0.08  # Boucle fermée (03/08) : un « remède confirmé »
                         # (PR de l'agent mergée PUIS vérifiée stable par B4)
                         # est la référence maximale — appliqué ET prouvé par
                         # la mesure, il passe devant les post-mortems.
+VALIDATED_BOOST = 0.02  # 05/08 : cause confirmée par un HUMAIN (/validate).
+                        # 0.05+0.02=0.07 : un post-mortem validé passe devant
+                        # les post-mortems auto (0.05) mais reste derrière la
+                        # preuve mesurée du remède confirmé (0.08).
 
 
 def _rank(results, k):
@@ -282,6 +292,7 @@ def _rank(results, k):
                        + (CONFIRMED_BOOST if d.get("type") == "remede_confirme"
                           else PM_BOOST if d.get("type") == "postmortem"
                           else 0.0)
+                       + (VALIDATED_BOOST if d.get("validated") else 0.0)
                        - (LOWCONF_MALUS if d.get("confidence") == "basse"
                           else 0.0)),
         reverse=True)[:k]
@@ -306,6 +317,7 @@ def _lexical(query, k):
                 scored.append({"title": p.get("title"), "date": p.get("date"),
                                "type": p.get("type"),
                                "confidence": p.get("confidence"),
+                               "validated": p.get("validated", False),
                                "verdict": p.get("verdict"),
                                "tags": p.get("tags", []),
                                "score": round(hits / len(words), 4),
@@ -331,6 +343,7 @@ def search(query, k=3):
                            "date": p["payload"].get("date"),
                            "type": p["payload"].get("type"),
                            "confidence": p["payload"].get("confidence"),
+                           "validated": p["payload"].get("validated", False),
                            "verdict": p["payload"].get("verdict"),
                            "tags": p["payload"].get("tags", []),
                            "score": round(p.get("score", 0.0), 4),
@@ -342,6 +355,7 @@ def search(query, k=3):
         scored = [{"title": d["payload"]["title"], "date": d["payload"]["date"],
                    "type": d["payload"].get("type"),
                    "confidence": d["payload"].get("confidence"),
+                   "validated": d["payload"].get("validated", False),
                    "verdict": d["payload"]["verdict"],
                    "tags": d["payload"]["tags"],
                    "score": round(_cosine(qv, d["vec"]), 4),
@@ -349,6 +363,47 @@ def search(query, k=3):
                   for d in _cache["docs"] if d.get("vec")]   # A1 : sans
                   # vecteur (embedding différé), pas de cosinus possible
     return _rank(scored, k)
+
+
+def validate_doc(title_sub, by):
+    """05/08 — validation humaine d'un post-mortem : marque le document
+    (retrouvé par sous-chaîne de titre, correspondance UNIQUE exigée — même
+    philosophie que l'allow-list : toute ambiguïté est un refus, jamais une
+    supposition) comme confirmé par l'équipe. Le boost VALIDATED_BOOST
+    s'applique dès la prochaine recherche."""
+    if not title_sub or not by:
+        raise ValueError("title et by sont requis")
+    needle = title_sub.lower()
+    with _lock:
+        hits = [d for d in _cache["docs"]
+                if needle in d["payload"].get("title", "").lower()]
+    if not hits:
+        raise ValueError(f"aucun document ne contient « {title_sub} »")
+    if len(hits) > 1:
+        raise ValueError(
+            "ambigu, précisez le titre — candidats : "
+            + " | ".join(d["payload"]["title"] for d in hits[:5]))
+    d = hits[0]
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    with _lock:
+        d["payload"]["validated"] = True
+        d["payload"]["validated_by"] = by
+        d["payload"]["validated_date"] = when
+        _save()
+    pushed = False
+    if QDRANT_URL and d.get("vec"):
+        try:
+            _upsert(d["id"], d["vec"], d["payload"])
+            pushed = True
+        except Exception as e:
+            log(f"validate: qdrant injoignable, mis en file : {e}")
+            with _lock:
+                if d["id"] not in _cache["pending"]:
+                    _cache["pending"].append(d["id"])
+                    _save()
+    log(f"validé par {by} : {d['payload']['title']}")
+    return {"title": d["payload"]["title"], "validated_by": by,
+            "date": when, "qdrant": pushed}
 
 
 def all_payloads():
@@ -398,7 +453,8 @@ class Handler(BaseHTTPRequestHandler):
                         "backend": "qdrant" if QDRANT_URL else "local"})
         elif self.path == "/list":
             self._json([{k: d.get(k) for k in
-                         ("title", "date", "type", "severity", "tags")}
+                         ("title", "date", "type", "severity", "tags",
+                          "validated", "validated_by")}
                         for d in all_payloads()])
         elif self.path.startswith("/export"):
             # Archivage : dump Markdown structuré, prêt à commiter dans Git.
@@ -441,6 +497,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "documents": n, "queued": queued})
             elif self.path == "/search":
                 self._json(search(data["query"], data.get("k", 3)))
+            elif self.path == "/validate":
+                # {title: <sous-chaîne unique du titre>, by: <qui valide>}
+                try:
+                    self._json({"ok": True,
+                                **validate_doc(data.get("title", ""),
+                                               data.get("by", ""))})
+                except ValueError as e:
+                    self._json({"ok": False, "error": str(e)}, code=400)
             else:
                 self.send_response(404)
                 self.end_headers()

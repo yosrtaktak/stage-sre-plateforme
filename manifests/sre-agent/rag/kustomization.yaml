@@ -1,0 +1,7 @@
+namespace: monitoring
+resources:
+  - rag-deployment.yaml
+configMapGenerator:
+  - name: postmortem-rag-script
+    files:
+      - postmortem-rag.py
