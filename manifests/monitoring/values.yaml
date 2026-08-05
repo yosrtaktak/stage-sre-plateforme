@@ -68,6 +68,10 @@ prometheus:
         memory: 128Mi
         cpu: 100m
     extraSecretMounts:
+      - name: incident-tool-url
+        mountPath: /etc/secrets/incident-tool
+        secretName: incident-tool-url
+        readOnly: true
       - name: slack-webhook
         secretName: alertmanager-slack-webhook
         mountPath: /etc/alertmanager/secrets
@@ -98,6 +102,13 @@ prometheus:
             group_wait: 30s
             group_interval: 5m
             repeat_interval: 4h
+          - match_re:
+              severity: critical
+            receiver: incident-tool
+            continue: true
+            group_wait: 30s
+            group_interval: 5m
+            repeat_interval: 4h 
           - match:
               severity: critical
             receiver: slack-critical
@@ -167,6 +178,11 @@ prometheus:
               send_resolved: false   # passer à true pour activer le post-mortem
                                      # (avec POSTMORTEM_ENABLED=true côté bridge)
               max_alerts: 5          # borne la taille du payload groupé
+        - name: incident-tool
+          webhook_configs:
+            - url_file: /etc/secrets/incident-tool/url
+              send_resolved: true
+              max_alerts: 5
         - name: default
           slack_configs:
             - api_url_file: /etc/alertmanager/secrets/slack-url-default
