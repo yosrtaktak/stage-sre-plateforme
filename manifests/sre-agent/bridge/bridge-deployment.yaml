@@ -124,6 +124,13 @@ spec:
               value: "1800"            # 30 min (mettre 300 pour une démo)
             - name: PROM_URL
               value: "http://obs-prometheus-server.monitoring.svc.cluster.local:80"
+            # Incident Adapter (checklist anti lock-in) : cycle de vie des
+            # incidents (open/ack/close + timeline agent) écrit dans NOTRE
+            # base neutre via incident-db-api (PostgREST). L'URL pointe vers
+            # l'API de la base, JAMAIS vers l'outil d'astreinte — GoAlert
+            # est remplaçable sans toucher au bridge. Vide = feature off.
+            - name: INCIDENT_API_URL
+              value: "http://incident-db-api.monitoring.svc.cluster.local:3000"
           ports:
             - containerPort: 8000
           volumeMounts:

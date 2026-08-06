@@ -39,6 +39,18 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Incident Adapter (checklist anti lock-in, point 7) : cycle de vie des
+# incidents dans NOTRE base neutre (incident_db via incident-db-api). Le
+# bridge ne connaît que les verbes standards open/ack/close/event — jamais
+# GoAlert. Module absent ou INCIDENT_API_URL vide -> feature off, le bridge
+# démarre quand même (même philosophie que remediation/grafana).
+try:
+    import incident_adapter
+    if not incident_adapter.enabled():
+        incident_adapter = None
+except Exception:
+    incident_adapter = None
+
 HOLMES_URL = os.environ.get(
     "HOLMES_URL", "http://holmesgpt-holmes.monitoring.svc.cluster.local:80")
 HOLMES_MODEL = os.environ.get("HOLMES_MODEL", "gemini-flash")
@@ -174,6 +186,11 @@ def _metrics_text():
                      f'{m["confidence_" + lvl]}')
     lines.append(f"holmes_bridge_investigation_duration_seconds_sum {m['duration_sum']:.1f}")
     lines.append(f"holmes_bridge_investigation_duration_seconds_count {m['duration_count']}")
+    # Adapter incident : si errors monte, incident_db décroche du réel
+    # (l'agent, lui, continue — feature dégradable par construction).
+    if incident_adapter:
+        for k, v in incident_adapter.counters.items():
+            lines.append(f"holmes_bridge_incident_db_{k}_total {v}")
     return "\n".join(lines) + "\n"
 
 
@@ -1141,6 +1158,12 @@ def _maybe_remediate(analysis, labels, fp):
             f": {res['url']}\nCI `validate-manifests` en cours — le merge "
             f"reste une décision humaine (branche protégée).")
         log(f"PR ouverte : {res['url']}")
+        # Timeline : la PR rejoint l'historique de l'incident (URL en preuve).
+        if incident_adapter:
+            threading.Thread(
+                target=incident_adapter.add_event,
+                args=(fp, "agent-sre", "pr_opened", res["url"]),
+                daemon=True).start()
     elif reason not in ("no-proposal", "disabled"):
         # Refus allow-list / état périmé : journalisé + compté, le correctif
         # reste une recommandation Slack (le diagnostic est déjà posté).
@@ -1332,6 +1355,12 @@ def investigate(alert, postmortem=False):
     grafana_annotate(
         f"{icon} {labels.get('alertname', '?')} — {verdict_line}",
         tags=[labels.get("alertname", "?"), labels.get("severity", "?")])
+    # Timeline auditable : le travail de l'agent (diagnostic/post-mortem)
+    # est tracé dans incident_db via l'adapter — preuve horodatée, quel que
+    # soit l'outil d'astreinte du moment.
+    if incident_adapter:
+        threading.Thread(target=incident_adapter.record_analysis,
+                         args=(fp, postmortem, verdict_line), daemon=True).start()
     # RAG : le document rejoint l'index vectoriel des incidents.
     when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     _rag_add(
@@ -1390,9 +1419,6 @@ def handle(alerts):
     now = time.time()
     for alert in alerts:
         status = alert.get("status")
-        postmortem = status == "resolved" and POSTMORTEM
-        if status != "firing" and not postmortem:
-            continue
         name = alert.get("labels", {}).get("alertname", "")
         if name == "Watchdog":
             continue
@@ -1401,6 +1427,16 @@ def handle(alerts):
         if alert.get("labels", {}).get("synthetic") == "true":
             _metrics["skips_synthetic"] += 1
             log(f"skip (alerte synthetic) : {name}")
+            continue
+        # Adapter incident : le cycle de vie (open sur firing, close sur
+        # resolved) part vers incident_db AVANT tous les filtres d'enquête —
+        # la vérité MTTA/MTTR ne dépend ni de la dédup ni de la politique
+        # post-mortem. Thread daemon : jamais bloquant pour Alertmanager.
+        if incident_adapter and status in ("firing", "resolved"):
+            threading.Thread(target=incident_adapter.on_alert,
+                             args=(alert,), daemon=True).start()
+        postmortem = status == "resolved" and POSTMORTEM
+        if status != "firing" and not postmortem:
             continue
         # B1 : alerte résolue avant merge -> fermer la PR de remédiation
         # associée (indépendant du filtre post-mortem ci-dessous).
@@ -1503,6 +1539,32 @@ def _safe_investigate(alert, postmortem=False, fp=None, t_enq=None):
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        # ACK neutre (point 10 de la checklist) : n'importe quel outil
+        # d'astreinte (webhook GoAlert traduit, workflow Slack, curl humain)
+        # peut poser l'acquittement — corps JSON {"fingerprint": ...} ou
+        # {"alertname": ...} + "actor" facultatif. C'est CETTE porte qui
+        # alimente le MTTA, pas l'API interne d'un outil.
+        if self.path == "/incident/ack":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length))
+                if incident_adapter and (data.get("fingerprint")
+                                         or data.get("alertname")):
+                    threading.Thread(
+                        target=incident_adapter.ack,
+                        kwargs={"fingerprint": data.get("fingerprint"),
+                                "alertname": data.get("alertname"),
+                                "actor": data.get("actor", "humain"),
+                                "detail": data.get("detail", "")},
+                        daemon=True).start()
+                    self.send_response(202)
+                else:
+                    self.send_response(400)
+            except Exception as e:
+                log(f"ack error: {e}")
+                self.send_response(500)
+            self.end_headers()
+            return
         if self.path != "/webhook":
             self.send_response(404)
             self.end_headers()

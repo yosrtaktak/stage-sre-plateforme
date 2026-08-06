@@ -17,3 +17,4 @@ configMapGenerator:
     files:
       - holmes-bridge.py
       - remediation.py
+      - incident_adapter.py
