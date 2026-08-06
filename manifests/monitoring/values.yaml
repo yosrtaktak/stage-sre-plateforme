@@ -874,9 +874,7 @@ grafana:
   # panel : sa méthode query() renvoie toujours des données vides (il ne sert
   # qu'à l'UI d'Alerting). Infinity interroge l'API REST /api/v2/alerts.
   # Téléchargé au démarrage du pod (nécessite l'accès internet du nœud).
-  plugins:
-    - yesoreyeram-infinity-datasource
-
+  plugins: []
   datasources:
     datasources.yaml:
       apiVersion: 1
@@ -1003,6 +1001,7 @@ grafana:
 
   env:
     GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/istio/istio-mesh.json
+    GF_PLUGINS_PREINSTALL_DISABLE: "true"
 
 # =============================================================================
 #  OTEL GATEWAY  (Deployment) — reçoit OTLP/Zipkin de l'app et du mesh,
