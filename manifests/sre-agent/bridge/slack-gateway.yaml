@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-gateway
+  namespace: monitoring
+  labels:
+    app: slack-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slack-gateway
+  template:
+    metadata:
+      labels:
+        app: slack-gateway
+    spec:
+      containers:
+        - name: gateway
+          image: python:3.11-slim
+          command: ["python", "/app/slack-gateway.py"]
+          env:
+            - name: BRIDGE_URL
+              value: "http://holmes-bridge.monitoring.svc.cluster.local:8000"
+            - name: SLACK_SIGNING_SECRET_FILE
+              value: "/etc/slack-gw/signing-secret"
+          ports:
+            - containerPort: 8010
+          volumeMounts:
+            - name: script            # la ConfigMap hashée du bridge
+              mountPath: /app
+              readOnly: true
+            - name: signing
+              mountPath: /etc/slack-gw
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8010 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 50m, memory: 64Mi }
+      volumes:
+        - name: script
+          configMap:
+            name: holmes-bridge-script
+        - name: signing
+          secret:
+            secretName: slack-gateway
+            optional: true   # sans secret : gateway refuse tout (401), sans crash
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slack-gateway
+  namespace: monitoring
+  labels:
+    app: slack-gateway
+spec:
+  selector:
+    app: slack-gateway
+  ports:
+    - port: 8010
+      targetPort: 8010
+---
+# Le tunnel : connexion SORTANTE permanente vers ngrok, qui publie
+# https://<domain>/... -> slack-gateway:8010. Domaine statique du plan free.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ngrok-tunnel
+  namespace: monitoring
+  labels:
+    app: ngrok-tunnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ngrok-tunnel
+  template:
+    metadata:
+      labels:
+        app: ngrok-tunnel
+    spec:
+      containers:
+        - name: ngrok
+          image: ngrok/ngrok:latest
+          args:
+            - "http"
+            - "http://slack-gateway.monitoring.svc.cluster.local:8010"
+            - "--domain=$(NGROK_DOMAIN)"
+            - "--log=stdout"
+          env:
+            - name: NGROK_AUTHTOKEN
+              valueFrom:
+                secretKeyRef: { name: ngrok-tunnel, key: authtoken }
+            - name: NGROK_DOMAIN
+              valueFrom:
+                secretKeyRef: { name: ngrok-tunnel, key: domain }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 50m, memory: 64Mi }

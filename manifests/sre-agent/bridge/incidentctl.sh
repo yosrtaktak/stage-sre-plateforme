@@ -11,8 +11,9 @@
 #    ./incidentctl.sh list                          # incidents ouverts
 #    ./incidentctl.sh timeline [N]                  # N derniers événements (déf. 15)
 #    ./incidentctl.sh metrics                       # MTTA / MTTR par service
-#    ./incidentctl.sh ack  <alertname> <acteur> [note]
-#    ./incidentctl.sh note <alertname> <acteur> <texte...>
+#    ./incidentctl.sh ack     <alertname> <acteur> [note]
+#    ./incidentctl.sh note    <alertname> <acteur> <texte...>
+#    ./incidentctl.sh resolve <alertname> <acteur> [raison]   # clôture humaine
 #
 #  Exemple war room (multi-utilisateurs) :
 #    ./incidentctl.sh ack  CheckoutFastBurn yosr "je prends"
@@ -49,7 +50,7 @@ case "$cmd" in
     _get "/incident_events?order=at.desc&limit=${2:-15}&select=at,incident_id,actor,action,detail" ;;
   metrics)
     _get "/incident_metrics" ;;
-  ack|note)
+  ack|note|resolve)
     alert="${2:?alertname requis}" ; actor="${3:?acteur requis}"
     shift 3 || shift $# ; detail="${*:-}"
     if [ "$cmd" = note ] && [ -z "$detail" ]; then
@@ -61,3 +62,4 @@ case "$cmd" in
   *)
     grep '^#  ' "$0" | sed 's/^#  //' ;;
 esac
+

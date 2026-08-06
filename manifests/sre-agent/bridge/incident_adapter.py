@@ -74,9 +74,21 @@ def _q(v):
 
 
 def _find(fp):
-    """L'incident (id, status) portant ce fingerprint, ou None."""
+    """Le plus RÉCENT incident portant ce fingerprint (tous statuts), ou
+    None. Depuis la levée de l'unicité (06/08), un même fingerprint peut
+    avoir PLUSIEURS occurrences : une ligne par épisode — sinon une alerte
+    récurrente n'était plus jamais enregistrée après sa première clôture."""
     rows = _req("GET", f"/incidents?fingerprint=eq.{_q(fp)}"
+                       "&order=opened_at.desc&limit=1"
                        "&select=id,status,acked_at,summary,alertname")
+    return rows[0] if rows else None
+
+
+def _active(fp):
+    """L'occurrence encore ACTIVE (open/acked) de ce fingerprint, ou None."""
+    rows = _req("GET", f"/incidents?fingerprint=eq.{_q(fp)}"
+                       "&status=neq.closed&order=opened_at.desc&limit=1"
+                       "&select=id,status,acked_at,alertname")
     return rows[0] if rows else None
 
 
@@ -105,9 +117,26 @@ def _war_room(action, actor, label, detail):
     text = f"{icon} *{label or 'incident'}* — `{action}` par {actor}"
     if detail:
         text += f"\n> {detail[:400]}"
+    payload = {"text": text}
+    # ChatOps : l'annonce d'un NOUVEL incident porte les boutons [ACK] et
+    # [Resolve]. Le clic part vers slack-gateway (signature vérifiée) qui le
+    # traduit en /incident/<verbe> — sans gateway/tunnel, les boutons restent
+    # affichés mais inertes : aucune dégradation du reste.
+    if action == "created" and label:
+        payload["blocks"] = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "actions", "elements": [
+                {"type": "button", "style": "primary", "action_id": "ack",
+                 "text": {"type": "plain_text", "text": "✋ ACK"},
+                 "value": label},
+                {"type": "button", "style": "danger", "action_id": "resolve",
+                 "text": {"type": "plain_text", "text": "✅ Resolve"},
+                 "value": label},
+            ]},
+        ]
     try:
         req = urllib.request.Request(
-            url, data=json.dumps({"text": text}).encode(),
+            url, data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
@@ -150,8 +179,10 @@ def _open(alert):
     labels = alert.get("labels", {})
     fp = (alert.get("fingerprint")
           or (labels.get("alertname", "") + alert.get("startsAt", "")))
-    if _find(fp):
+    if _active(fp):
         return          # renvoi Alertmanager (repeat_interval) : déjà ouvert
+    # NB : une occurrence CLOSE du même fingerprint ne bloque pas — nouvelle
+    # alerte = nouvel épisode = nouvelle ligne (stats MTTA/MTTR par épisode).
     ann = alert.get("annotations", {})
     row = _req("POST", "/incidents", prefer="return=representation", body={
         "fingerprint": fp,
@@ -174,10 +205,10 @@ def _close(alert):
     fp = (alert.get("fingerprint")
           or (alert.get("labels", {}).get("alertname", "")
               + alert.get("startsAt", "")))
-    found = _find(fp)
-    if not found or found["status"] == "closed":
+    found = _active(fp)
+    if not found:
         return          # inconnu (ouvert avant l'adapter) ou déjà clos
-    _req("PATCH", f"/incidents?fingerprint=eq.{_q(fp)}&status=neq.closed",
+    _req("PATCH", f"/incidents?id=eq.{found['id']}",
          body={"status": "closed",
                "closed_at": alert.get("endsAt")
                or datetime.now(timezone.utc).isoformat()})
@@ -223,6 +254,30 @@ def note(fingerprint=None, alertname=None, actor="humain", detail=""):
                label=found.get("alertname", ""))
         log(f"note de {actor} sur {fingerprint or alertname}")
     _safe(_do, "note")
+
+
+def resolve(fingerprint=None, alertname=None, actor="humain", detail=""):
+    """Clôture HUMAINE : l'astreinte décide que c'est terminé (l'alerte a
+    flappé puis disparu, ou clôture administrative). La clôture Alertmanager
+    (resolved) reste le chemin nominal — ici c'est l'acteur qui prend la
+    responsabilité, et le MTTR est figé à l'instant de son geste.
+    NB : si l'alerte crie ENCORE, l'incident renaîtra au prochain renvoi
+    Alertmanager (nouvel épisode) — pour taire une alerte, c'est un silence
+    Alertmanager qu'il faut, pas un resolve."""
+    def _do():
+        found = _lookup(fingerprint, alertname)
+        if not found:
+            log(f"resolve ignoré : aucun incident actif pour "
+                f"{fingerprint or alertname}")
+            return
+        _req("PATCH", f"/incidents?id=eq.{found['id']}",
+             body={"status": "closed",
+                   "closed_at": datetime.now(timezone.utc).isoformat()})
+        _event(found["id"], actor, "closed",
+               detail or "clôture manuelle",
+               label=found.get("alertname", ""))
+        log(f"incident clos par {actor} : {fingerprint or alertname}")
+    _safe(_do, "resolve")
 
 
 def record_analysis(fp, postmortem, verdict):

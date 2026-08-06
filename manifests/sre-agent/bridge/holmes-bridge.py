@@ -1545,16 +1545,17 @@ class Handler(BaseHTTPRequestHandler):
         # {"fingerprint": ...} ou {"alertname": ...} + "actor"/"detail".
         # C'est CETTE porte qui alimente le MTTA et la timeline, pas l'API
         # interne d'un outil. Chaque verbe est reflété dans #sre-war-room.
-        if self.path in ("/incident/ack", "/incident/note"):
+        if self.path in ("/incident/ack", "/incident/note",
+                         "/incident/resolve"):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length))
-                verb = (incident_adapter.note if self.path.endswith("note")
-                        else incident_adapter.ack) if incident_adapter else None
-                # une note sans texte n'a pas de sens (l'ack, si)
+                verb_name = self.path.rsplit("/", 1)[1]
+                verb = (getattr(incident_adapter, verb_name)
+                        if incident_adapter else None)
+                # une note sans texte n'a pas de sens (ack/resolve, si)
                 valid = ((data.get("fingerprint") or data.get("alertname"))
-                         and (data.get("detail")
-                              or self.path.endswith("ack")))
+                         and (data.get("detail") or verb_name != "note"))
                 if verb and valid:
                     threading.Thread(
                         target=verb,

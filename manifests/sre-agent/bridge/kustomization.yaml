@@ -12,9 +12,11 @@
 namespace: monitoring
 resources:
   - bridge-deployment.yaml
+  - slack-gateway.yaml
 configMapGenerator:
   - name: holmes-bridge-script
     files:
       - holmes-bridge.py
       - remediation.py
       - incident_adapter.py
+      - slack-gateway.py
