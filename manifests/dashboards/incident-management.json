@@ -1,0 +1,512 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "name": "🤖 Agent SRE (verdicts)",
+        "target": { "limit": 100, "matchAny": false, "tags": ["sre-agent"], "type": "tags" },
+        "type": "tags"
+      },
+      {
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "blue",
+        "name": "🚀 Déploiements GitOps",
+        "target": { "limit": 100, "matchAny": false, "tags": ["deploy"], "type": "tags" },
+        "type": "tags"
+      }
+    ]
+  },
+  "description": "Dashboard 6 - Incident Management (v3). Source : incident_db (NOTRE base neutre, checklist anti lock-in) via incident-db-api (PostgREST) et le plugin Infinity — JAMAIS l'API de l'outil d'astreinte : remplacer GoAlert ne change rien ici. MTTA = acked_at - opened_at (premier ack), MTTR = closed_at - opened_at, calculés par la vue SQL incident_metrics (par service/sévérité, jamais par personne). La timeline incident_events est la preuve auditable : qui (alertmanager / agent-sre / humain) a fait quoi (created / diagnosed / acknowledged / pr_opened / closed / postmortem) et quand.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Astreinte (incident-tool)",
+      "tooltip": "UI de l'outil d'astreinte du moment (aujourd'hui GoAlert) — volontairement derrière le nom neutre incident-tool",
+      "type": "link",
+      "url": "http://10.0.2.15:32082"
+    },
+    {
+      "asDropdown": true,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": ["sre-v3"],
+      "targetBlank": false,
+      "title": "Dashboards v3",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "id": 980,
+      "type": "row",
+      "title": "⏱ MTTA / MTTR — la synthèse par service (vue incident_metrics)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 981,
+      "type": "stat",
+      "title": "Incidents ouverts",
+      "description": "Lignes de la table incidents avec status != closed (open ou acked). Source : GET /incidents de incident-db-api — pas l'outil d'astreinte.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["count"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incidents?status=neq.closed&select=id",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [{ "selector": "id", "text": "id", "type": "number" }]
+        }
+      ]
+    },
+    {
+      "id": 982,
+      "type": "stat",
+      "title": "Sans acquittement",
+      "description": "Incidents ouverts jamais ackés (acked_at IS NULL) : le backlog qui dégrade le MTTA. Doit tendre vers 0 — un incident acké prouve qu'un humain a pris la main.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["count"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incidents?status=eq.open&acked_at=is.null&select=id",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [{ "selector": "id", "text": "id", "type": "number" }]
+        }
+      ]
+    },
+    {
+      "id": 983,
+      "type": "stat",
+      "title": "Incidents enregistrés (total)",
+      "description": "Toutes lignes confondues (ouverts + clos) depuis la mise en service de incident_db. L'historique survit à tout changement d'outil d'astreinte (pg_dump et on part).",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["count"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incidents?select=id",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [{ "selector": "id", "text": "id", "type": "number" }]
+        }
+      ]
+    },
+    {
+      "id": 984,
+      "type": "table",
+      "title": "MTTA / MTTR par service et sévérité",
+      "description": "La vue SQL incident_metrics : MTTA moyen (acked_at - opened_at, premier ack), MTTR moyen (closed_at - opened_at), nombre d'incidents et backlog sans ack. Par service/sévérité, JAMAIS par personne (choix assumé). MTTA/MTTR null = aucun incident acké/clos encore dans ce groupe.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": {} },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "MTTA moyen" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 300 },
+                    { "color": "red", "value": 900 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "MTTR moyen" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 1800 },
+                    { "color": "red", "value": 3600 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Sévérité" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": { "text": "critical", "color": "red", "index": 0 },
+                      "warning": { "text": "warning", "color": "orange", "index": 1 }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Sans ack" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "red", "value": 1 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Incidents", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incident_metrics",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "service", "text": "Service", "type": "string" },
+            { "selector": "severity", "text": "Sévérité", "type": "string" },
+            { "selector": "incidents", "text": "Incidents", "type": "number" },
+            { "selector": "mtta_s", "text": "MTTA moyen", "type": "number" },
+            { "selector": "mttr_s", "text": "MTTR moyen", "type": "number" },
+            { "selector": "sans_ack", "text": "Sans ack", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 985,
+      "type": "row",
+      "title": "📋 Incidents — état courant et historique",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "panels": []
+    },
+    {
+      "id": 986,
+      "type": "table",
+      "title": "Incidents ouverts (open = à acquitter, acked = pris en main)",
+      "description": "GET /incidents?status=neq.closed, plus récent en tête. opened_at vient du startsAt Alertmanager ; summary est la description de l'alerte puis le verdict de l'agent si vide.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": {} },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Statut" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "open": { "text": "open → À ACQUITTER", "color": "red", "index": 0 },
+                      "acked": { "text": "acked → pris en main", "color": "orange", "index": 1 }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Sévérité" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": { "text": "critical", "color": "red", "index": 0 },
+                      "warning": { "text": "warning", "color": "orange", "index": 1 }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Ouvert depuis", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incidents?status=neq.closed&order=opened_at.desc",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "alertname", "text": "Alerte", "type": "string" },
+            { "selector": "service", "text": "Service", "type": "string" },
+            { "selector": "severity", "text": "Sévérité", "type": "string" },
+            { "selector": "status", "text": "Statut", "type": "string" },
+            { "selector": "opened_at", "text": "Ouvert depuis", "type": "timestamp" },
+            { "selector": "acked_at", "text": "Acké à", "type": "timestamp" },
+            { "selector": "summary", "text": "Résumé", "type": "string" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 987,
+      "type": "table",
+      "title": "Timeline auditable — 30 derniers événements",
+      "description": "La table incident_events : qui a fait quoi, quand, avec la preuve (verdict, URL de PR...). C'est la matérialisation de l'idée n°4 (timeline auditable) — chaque acteur (alertmanager, agent-sre, humain) écrit au même endroit, quel que soit l'outil d'astreinte.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": {} },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Action" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "created": { "text": "created", "color": "red", "index": 0 },
+                      "diagnosed": { "text": "diagnosed 🤖", "color": "purple", "index": 1 },
+                      "acknowledged": { "text": "acknowledged ✋", "color": "orange", "index": 2 },
+                      "pr_opened": { "text": "pr_opened 🔧", "color": "blue", "index": 3 },
+                      "closed": { "text": "closed ✅", "color": "green", "index": 4 },
+                      "postmortem": { "text": "postmortem 📋", "color": "text", "index": 5 }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Quand", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incident_events?order=at.desc&limit=30",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "at", "text": "Quand", "type": "timestamp" },
+            { "selector": "incident_id", "text": "Incident", "type": "number" },
+            { "selector": "actor", "text": "Acteur", "type": "string" },
+            { "selector": "action", "text": "Action", "type": "string" },
+            { "selector": "detail", "text": "Détail / preuve", "type": "string" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 988,
+      "type": "table",
+      "title": "Derniers incidents clos (preuves MTTR)",
+      "description": "GET /incidents?status=eq.closed : les 20 dernières résolutions avec leurs trois horodatages — la matière première des moyennes MTTA/MTTR du panel 984.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": {} },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Sévérité" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": { "text": "critical", "color": "red", "index": 0 },
+                      "warning": { "text": "warning", "color": "orange", "index": 1 }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Clos à", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incidents?status=eq.closed&order=closed_at.desc&limit=20",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "alertname", "text": "Alerte", "type": "string" },
+            { "selector": "severity", "text": "Sévérité", "type": "string" },
+            { "selector": "opened_at", "text": "Ouvert", "type": "timestamp" },
+            { "selector": "acked_at", "text": "Acké", "type": "timestamp" },
+            { "selector": "closed_at", "text": "Clos à", "type": "timestamp" }
+          ]
+        }
+      ]
+    }
+  ],
+  "preload": false,
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": ["sre-v3", "incident", "mtta-mttr"],
+  "templating": { "list": [] },
+  "time": { "from": "now-7d", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "🚨 Incident Management — MTTA / MTTR (incident_db)",
+  "uid": "incident-mgmt-boutique-v3",
+  "version": 1,
+  "weekStart": ""
+}

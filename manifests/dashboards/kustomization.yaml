@@ -9,6 +9,7 @@
        - infra-k8s-health.json
        - logs-traces.json
        - service-mesh-traffic.json
+       - incident-management.json
      options:
        disableNameSuffixHash: true
        labels:
