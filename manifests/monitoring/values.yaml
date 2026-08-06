@@ -175,7 +175,7 @@ prometheus:
         - name: holmes-bridge
           webhook_configs:
             - url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
-              send_resolved: false   # passer à true pour activer le post-mortem
+              send_resolved: true   # passer à true pour activer le post-mortem
                                      # (avec POSTMORTEM_ENABLED=true côté bridge)
               max_alerts: 5          # borne la taille du payload groupé
         - name: incident-tool
