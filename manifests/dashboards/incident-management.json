@@ -405,9 +405,10 @@
                       "created": { "text": "created", "color": "red", "index": 0 },
                       "diagnosed": { "text": "diagnosed 🤖", "color": "purple", "index": 1 },
                       "acknowledged": { "text": "acknowledged ✋", "color": "orange", "index": 2 },
-                      "pr_opened": { "text": "pr_opened 🔧", "color": "blue", "index": 3 },
-                      "closed": { "text": "closed ✅", "color": "green", "index": 4 },
-                      "postmortem": { "text": "postmortem 📋", "color": "text", "index": 5 }
+                      "note": { "text": "note 📝", "color": "yellow", "index": 3 },
+                      "pr_opened": { "text": "pr_opened 🔧", "color": "blue", "index": 4 },
+                      "closed": { "text": "closed ✅", "color": "green", "index": 5 },
+                      "postmortem": { "text": "postmortem 📋", "color": "text", "index": 6 }
                     }
                   }
                 ]

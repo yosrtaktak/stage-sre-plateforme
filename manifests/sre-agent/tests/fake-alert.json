@@ -24,7 +24,7 @@
         "summary": "Burn rate rapide sur le SLO checkout",
         "description": "TEST MANUEL (fausse alerte) : le SLI sli:checkout_success:ratio5m brule le budget d'erreur a un rythme critique (fenetres 5m/1h). Verifier l'etat reel du service checkout."
       },
-      "startsAt": "2026-07-24T10:00:00.000Z",
+      "startsAt": "2026-08-06T09:19:00.000Z",
       "endsAt": "0001-01-01T00:00:00Z",
       "fingerprint": "test-manuel-0001"
     }

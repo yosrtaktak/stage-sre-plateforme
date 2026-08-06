@@ -31,6 +31,15 @@ from datetime import datetime, timezone
 # URL de l'API incident (PostgREST). Vide = adapter désactivé (no-op).
 INCIDENT_API = os.environ.get("INCIDENT_API_URL", "").strip().rstrip("/")
 TIMEOUT_S = int(os.environ.get("INCIDENT_API_TIMEOUT_S", "5"))
+# War room (idée n°6) : CHAQUE événement de timeline est aussi poussé vers un
+# canal Slack dédié (#sre-war-room) — la salle unique où tout converge
+# (Alertmanager, agent, humains), quel que soit l'outil d'astreinte.
+# Fichier webhook absent = feature off (même mécanique que grafana/remediation).
+WAR_ROOM_FILE = os.environ.get(
+    "WAR_ROOM_WEBHOOK_FILE", "/etc/slack/slack-url-warroom")
+_ACTION_ICON = {"created": "🆕", "diagnosed": "🤖", "acknowledged": "✋",
+                "note": "📝", "pr_opened": "🔧", "closed": "✅",
+                "postmortem": "📋"}
 
 # Compteurs exposés dans le /metrics du bridge (méta-observabilité : si
 # errors monte, la base d'incidents décroche du réel sans casser l'agent).
@@ -67,14 +76,49 @@ def _q(v):
 def _find(fp):
     """L'incident (id, status) portant ce fingerprint, ou None."""
     rows = _req("GET", f"/incidents?fingerprint=eq.{_q(fp)}"
-                       "&select=id,status,acked_at,summary")
+                       "&select=id,status,acked_at,summary,alertname")
     return rows[0] if rows else None
 
 
-def _event(incident_id, actor, action, detail=""):
+def _lookup(fingerprint=None, alertname=None):
+    """Cible d'un verbe humain (ack/note) : par fingerprint, ou à défaut le
+    plus récent incident encore actif (open OU acked) de cet alertname."""
+    if fingerprint:
+        return _find(fingerprint)
+    rows = _req("GET", "/incidents?alertname=eq." + _q(alertname)
+                + "&status=in.(open,acked)&order=opened_at.desc"
+                  "&limit=1&select=id,status,acked_at,alertname,fingerprint")
+    return rows[0] if rows else None
+
+
+def _war_room(action, actor, label, detail):
+    """Reflète l'événement dans le canal war room. Jamais bloquant, jamais
+    d'exception ; webhook absent = silencieux."""
+    try:
+        with open(WAR_ROOM_FILE) as f:
+            url = f.read().strip()
+    except OSError:
+        return
+    if not url:
+        return
+    icon = _ACTION_ICON.get(action, "•")
+    text = f"{icon} *{label or 'incident'}* — `{action}` par {actor}"
+    if detail:
+        text += f"\n> {detail[:400]}"
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        log(f"war-room error (non bloquant): {e}")
+
+
+def _event(incident_id, actor, action, detail="", label=""):
     _req("POST", "/incident_events",
          body={"incident_id": incident_id, "actor": actor,
                "action": action, "detail": detail[:2000]})
+    _war_room(action, actor, label or f"incident #{incident_id}", detail)
 
 
 def _safe(fn, what):
@@ -121,7 +165,8 @@ def _open(alert):
     })
     _event(row[0]["id"], "alertmanager", "created",
            f"alerte {labels.get('alertname', '?')} "
-           f"sévérité {labels.get('severity', '?')}")
+           f"sévérité {labels.get('severity', '?')}",
+           label=labels.get("alertname", ""))
     log(f"incident ouvert : {labels.get('alertname', '?')} ({fp})")
 
 
@@ -136,7 +181,8 @@ def _close(alert):
          body={"status": "closed",
                "closed_at": alert.get("endsAt")
                or datetime.now(timezone.utc).isoformat()})
-    _event(found["id"], "alertmanager", "closed", "alerte resolved")
+    _event(found["id"], "alertmanager", "closed", "alerte resolved",
+           label=found.get("alertname", ""))
     log(f"incident clos : {fp}")
 
 
@@ -146,15 +192,9 @@ def ack(fingerprint=None, alertname=None, actor="humain", detail=""):
     quel outil d'astreinte (webhook, curl, workflow Slack) : l'outil n'a
     besoin de connaître QUE ce vocabulaire, pas notre schéma."""
     def _do():
-        if fingerprint:
-            found = _find(fingerprint)
-        else:
-            # `open` OU `acked` : un 2e humain qui acquitte en war room doit
-            # rester visible dans la timeline (le MTTA, lui, est déjà figé).
-            rows = _req("GET", "/incidents?alertname=eq." + _q(alertname)
-                        + "&status=in.(open,acked)&order=opened_at.desc"
-                          "&limit=1&select=id,status,acked_at,fingerprint")
-            found = rows[0] if rows else None
+        # `open` OU `acked` : un 2e humain qui acquitte en war room doit
+        # rester visible dans la timeline (le MTTA, lui, est déjà figé).
+        found = _lookup(fingerprint, alertname)
         if not found:
             log(f"ack ignoré : aucun incident ouvert pour "
                 f"{fingerprint or alertname}")
@@ -163,9 +203,26 @@ def ack(fingerprint=None, alertname=None, actor="humain", detail=""):
             _req("PATCH", f"/incidents?id=eq.{found['id']}&acked_at=is.null",
                  body={"acked_at": datetime.now(timezone.utc).isoformat(),
                        "status": "acked"})
-        _event(found["id"], actor, "acknowledged", detail)
+        _event(found["id"], actor, "acknowledged", detail,
+               label=found.get("alertname", ""))
         log(f"incident acké par {actor} : {fingerprint or alertname}")
     _safe(_do, "ack")
+
+
+def note(fingerprint=None, alertname=None, actor="humain", detail=""):
+    """ChatOps : une note humaine horodatée dans la timeline (« je redémarre
+    le pod », « fausse alerte, hotfix en cours »...) — la matière première
+    de la war room, reprise telle quelle dans le canal Slack dédié."""
+    def _do():
+        found = _lookup(fingerprint, alertname)
+        if not found:
+            log(f"note ignorée : aucun incident actif pour "
+                f"{fingerprint or alertname}")
+            return
+        _event(found["id"], actor, "note", detail,
+               label=found.get("alertname", ""))
+        log(f"note de {actor} sur {fingerprint or alertname}")
+    _safe(_do, "note")
 
 
 def record_analysis(fp, postmortem, verdict):
@@ -176,7 +233,8 @@ def record_analysis(fp, postmortem, verdict):
         if not found:
             return      # incident jamais ouvert (adapter activé en cours de vie)
         _event(found["id"], "agent-sre",
-               "postmortem" if postmortem else "diagnosed", verdict[:500])
+               "postmortem" if postmortem else "diagnosed", verdict[:500],
+               label=found.get("alertname", ""))
         if not postmortem and not (found.get("summary") or "").strip():
             _req("PATCH", f"/incidents?id=eq.{found['id']}",
                  body={"summary": verdict[:500]})
@@ -188,5 +246,7 @@ def add_event(fp, actor, action, detail=""):
     def _do():
         found = _find(fp)
         if found:
-            _event(found["id"], actor, action, detail)
+            _event(found["id"], actor, action, detail,
+                   label=found.get("alertname", ""))
     _safe(_do, f"event {action}")
+

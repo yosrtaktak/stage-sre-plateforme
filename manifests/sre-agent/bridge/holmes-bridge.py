@@ -1539,19 +1539,25 @@ def _safe_investigate(alert, postmortem=False, fp=None, t_enq=None):
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # ACK neutre (point 10 de la checklist) : n'importe quel outil
-        # d'astreinte (webhook GoAlert traduit, workflow Slack, curl humain)
-        # peut poser l'acquittement — corps JSON {"fingerprint": ...} ou
-        # {"alertname": ...} + "actor" facultatif. C'est CETTE porte qui
-        # alimente le MTTA, pas l'API interne d'un outil.
-        if self.path == "/incident/ack":
+        # Verbes ChatOps neutres (points 10 + idée n°6 war room) : n'importe
+        # quel outil (webhook GoAlert traduit, workflow Slack, CLI
+        # incidentctl, curl humain) peut acquitter ou annoter — corps JSON
+        # {"fingerprint": ...} ou {"alertname": ...} + "actor"/"detail".
+        # C'est CETTE porte qui alimente le MTTA et la timeline, pas l'API
+        # interne d'un outil. Chaque verbe est reflété dans #sre-war-room.
+        if self.path in ("/incident/ack", "/incident/note"):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length))
-                if incident_adapter and (data.get("fingerprint")
-                                         or data.get("alertname")):
+                verb = (incident_adapter.note if self.path.endswith("note")
+                        else incident_adapter.ack) if incident_adapter else None
+                # une note sans texte n'a pas de sens (l'ack, si)
+                valid = ((data.get("fingerprint") or data.get("alertname"))
+                         and (data.get("detail")
+                              or self.path.endswith("ack")))
+                if verb and valid:
                     threading.Thread(
-                        target=incident_adapter.ack,
+                        target=verb,
                         kwargs={"fingerprint": data.get("fingerprint"),
                                 "alertname": data.get("alertname"),
                                 "actor": data.get("actor", "humain"),
@@ -1561,7 +1567,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_response(400)
             except Exception as e:
-                log(f"ack error: {e}")
+                log(f"chatops error: {e}")
                 self.send_response(500)
             self.end_headers()
             return

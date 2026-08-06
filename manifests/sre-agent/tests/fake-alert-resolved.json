@@ -24,8 +24,8 @@
         "summary": "Burn rate rapide sur le SLO checkout",
         "description": "TEST MANUEL (fausse alerte resolue) : incident checkout termine, fenetre 10h00-10h12 UTC."
       },
-      "startsAt": "2026-07-24T10:00:00.000Z",
-      "endsAt": "2026-07-24T10:12:00.000Z",
+      "startsAt": "2026-08-06T09:19:00.000Z",
+      "endsAt": "2026-08-06T09:29:00.000Z",
       "fingerprint": "test-manuel-0001"
     }
   ]
