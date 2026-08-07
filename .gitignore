@@ -27,3 +27,6 @@ pkg/
 release/wi-kubernetes-manifests.yaml
 vendor/
 manifests/argoCD/repo-stage-sre.yaml
+
+# Artefacts Python des manifestes SRE
+__pycache__/

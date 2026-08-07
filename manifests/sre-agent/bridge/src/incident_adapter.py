@@ -39,7 +39,16 @@ WAR_ROOM_FILE = os.environ.get(
     "WAR_ROOM_WEBHOOK_FILE", "/etc/slack/slack-url-warroom")
 _ACTION_ICON = {"created": "🆕", "diagnosed": "🤖", "acknowledged": "✋",
                 "note": "📝", "pr_opened": "🔧", "closed": "✅",
-                "postmortem": "📋"}
+                "postmortem": "📋", "resolve_refused": "⚠️"}
+# Garde-fou resolve (07/08) : avant une clôture HUMAINE, on demande à
+# Alertmanager si l'alerte crie encore. Encore active -> resolve REFUSÉ
+# (pour la taire, c'est un silence qu'il faut). Alertmanager injoignable ->
+# on laisse passer (l'adapter ne casse jamais rien) — la clôture nominale
+# reste de toute façon le `resolved` d'Alertmanager. URL vide = garde-fou off.
+ALERTMANAGER_URL = os.environ.get(
+    "ALERTMANAGER_URL",
+    "http://obs-alertmanager.monitoring.svc.cluster.local:9093"
+).strip().rstrip("/")
 
 # Compteurs exposés dans le /metrics du bridge (méta-observabilité : si
 # errors monte, la base d'incidents décroche du réel sans casser l'agent).
@@ -92,6 +101,23 @@ def _active(fp):
     return rows[0] if rows else None
 
 
+def _still_firing(alertname):
+    """True si Alertmanager voit ENCORE cette alerte active (ni silencée, ni
+    inhibée), False si elle s'est tue, None si indéterminé (garde-fou off ou
+    Alertmanager injoignable) — None est traité comme un laissez-passer."""
+    if not ALERTMANAGER_URL or not alertname:
+        return None
+    try:
+        flt = urllib.parse.quote(f'alertname="{alertname}"')
+        url = (f"{ALERTMANAGER_URL}/api/v2/alerts?active=true"
+               f"&silenced=false&inhibited=false&filter={flt}")
+        with urllib.request.urlopen(url, timeout=TIMEOUT_S) as r:
+            return len(json.loads(r.read())) > 0
+    except Exception as e:
+        log(f"vérif Alertmanager impossible (laissez-passer): {e}")
+        return None
+
+
 def _lookup(fingerprint=None, alertname=None):
     """Cible d'un verbe humain (ack/note) : par fingerprint, ou à défaut le
     plus récent incident encore actif (open OU acked) de cet alertname."""
@@ -103,9 +129,11 @@ def _lookup(fingerprint=None, alertname=None):
     return rows[0] if rows else None
 
 
-def _war_room(action, actor, label, detail):
+def _war_room(action, actor, label, detail, display=""):
     """Reflète l'événement dans le canal war room. Jamais bloquant, jamais
-    d'exception ; webhook absent = silencieux."""
+    d'exception ; webhook absent = silencieux. `display` (mention Slack
+    <@ID>) prime sur `actor` pour l'affichage : Slack la rend comme le nom
+    du compte, la base garde le handle lisible."""
     try:
         with open(WAR_ROOM_FILE) as f:
             url = f.read().strip()
@@ -114,7 +142,7 @@ def _war_room(action, actor, label, detail):
     if not url:
         return
     icon = _ACTION_ICON.get(action, "•")
-    text = f"{icon} *{label or 'incident'}* — `{action}` par {actor}"
+    text = f"{icon} *{label or 'incident'}* — `{action}` par {display or actor}"
     if detail:
         text += f"\n> {detail[:400]}"
     payload = {"text": text}
@@ -143,11 +171,12 @@ def _war_room(action, actor, label, detail):
         log(f"war-room error (non bloquant): {e}")
 
 
-def _event(incident_id, actor, action, detail="", label=""):
+def _event(incident_id, actor, action, detail="", label="", display=""):
     _req("POST", "/incident_events",
          body={"incident_id": incident_id, "actor": actor,
                "action": action, "detail": detail[:2000]})
-    _war_room(action, actor, label or f"incident #{incident_id}", detail)
+    _war_room(action, actor, label or f"incident #{incident_id}", detail,
+              display)
 
 
 def _safe(fn, what):
@@ -217,7 +246,8 @@ def _close(alert):
     log(f"incident clos : {fp}")
 
 
-def ack(fingerprint=None, alertname=None, actor="humain", detail=""):
+def ack(fingerprint=None, alertname=None, actor="humain", detail="",
+        actor_display=""):
     """Premier ACK = MTTA. Cible par fingerprint, ou à défaut par alertname
     (le plus récent encore ouvert) — c'est la voie qu'empruntera n'importe
     quel outil d'astreinte (webhook, curl, workflow Slack) : l'outil n'a
@@ -235,12 +265,13 @@ def ack(fingerprint=None, alertname=None, actor="humain", detail=""):
                  body={"acked_at": datetime.now(timezone.utc).isoformat(),
                        "status": "acked"})
         _event(found["id"], actor, "acknowledged", detail,
-               label=found.get("alertname", ""))
+               label=found.get("alertname", ""), display=actor_display)
         log(f"incident acké par {actor} : {fingerprint or alertname}")
     _safe(_do, "ack")
 
 
-def note(fingerprint=None, alertname=None, actor="humain", detail=""):
+def note(fingerprint=None, alertname=None, actor="humain", detail="",
+         actor_display=""):
     """ChatOps : une note humaine horodatée dans la timeline (« je redémarre
     le pod », « fausse alerte, hotfix en cours »...) — la matière première
     de la war room, reprise telle quelle dans le canal Slack dédié."""
@@ -251,23 +282,36 @@ def note(fingerprint=None, alertname=None, actor="humain", detail=""):
                 f"{fingerprint or alertname}")
             return
         _event(found["id"], actor, "note", detail,
-               label=found.get("alertname", ""))
+               label=found.get("alertname", ""), display=actor_display)
         log(f"note de {actor} sur {fingerprint or alertname}")
     _safe(_do, "note")
 
 
-def resolve(fingerprint=None, alertname=None, actor="humain", detail=""):
+def resolve(fingerprint=None, alertname=None, actor="humain", detail="",
+            actor_display=""):
     """Clôture HUMAINE : l'astreinte décide que c'est terminé (l'alerte a
     flappé puis disparu, ou clôture administrative). La clôture Alertmanager
     (resolved) reste le chemin nominal — ici c'est l'acteur qui prend la
     responsabilité, et le MTTR est figé à l'instant de son geste.
-    NB : si l'alerte crie ENCORE, l'incident renaîtra au prochain renvoi
-    Alertmanager (nouvel épisode) — pour taire une alerte, c'est un silence
-    Alertmanager qu'il faut, pas un resolve."""
+    Garde-fou : si Alertmanager voit l'alerte ENCORE active, la clôture est
+    REFUSÉE et le refus tracé (timeline + war room) — un resolve prématuré
+    fausserait le MTTR et l'incident renaîtrait de toute façon au prochain
+    renvoi (nouvel épisode). Pour taire une alerte qui crie, c'est un silence
+    Alertmanager qu'il faut, pas un resolve. Alertmanager injoignable =
+    laissez-passer : l'humain assume, l'adapter ne bloque jamais à tort."""
     def _do():
         found = _lookup(fingerprint, alertname)
         if not found:
             log(f"resolve ignoré : aucun incident actif pour "
+                f"{fingerprint or alertname}")
+            return
+        if _still_firing(found.get("alertname") or alertname):
+            _event(found["id"], actor, "resolve_refused",
+                   "alerte encore active côté Alertmanager — clôture refusée "
+                   "; pour la taire, poser un silence Alertmanager (sinon "
+                   "l'incident renaîtrait au prochain renvoi)",
+                   label=found.get("alertname", ""), display=actor_display)
+            log(f"resolve REFUSÉ (alerte encore active) : "
                 f"{fingerprint or alertname}")
             return
         _req("PATCH", f"/incidents?id=eq.{found['id']}",
@@ -275,7 +319,7 @@ def resolve(fingerprint=None, alertname=None, actor="humain", detail=""):
                    "closed_at": datetime.now(timezone.utc).isoformat()})
         _event(found["id"], actor, "closed",
                detail or "clôture manuelle",
-               label=found.get("alertname", ""))
+               label=found.get("alertname", ""), display=actor_display)
         log(f"incident clos par {actor} : {fingerprint or alertname}")
     _safe(_do, "resolve")
 

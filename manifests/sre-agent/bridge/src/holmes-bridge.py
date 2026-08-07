@@ -1562,6 +1562,7 @@ class Handler(BaseHTTPRequestHandler):
                         kwargs={"fingerprint": data.get("fingerprint"),
                                 "alertname": data.get("alertname"),
                                 "actor": data.get("actor", "humain"),
+                                "actor_display": data.get("actor_display", ""),
                                 "detail": data.get("detail", "")},
                         daemon=True).start()
                     self.send_response(202)

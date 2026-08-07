@@ -1,3 +1,20 @@
+# =============================================================================
+#  slack-gateway + tunnel ngrok — l'interactivité Slack (boutons ACK/Resolve)
+# -----------------------------------------------------------------------------
+#  slack-gateway est LE SEUL composant exposé à internet (via le tunnel) :
+#  il vérifie la signature Slack et ne sait faire que 2 verbes du bridge.
+#  Le bridge, GoAlert, Grafana restent inaccessibles de l'extérieur.
+#  Le .py vit dans la MÊME ConfigMap hashée que le bridge (kustomization).
+#
+#  Secrets impératifs (jamais dans Git) :
+#    kubectl -n monitoring create secret generic slack-gateway \
+#      --from-literal=signing-secret='<Slack app -> Basic Information -> Signing Secret>'
+#    kubectl -n monitoring create secret generic ngrok-tunnel \
+#      --from-literal=authtoken='<dashboard.ngrok.com -> Your Authtoken>' \
+#      --from-literal=domain='<ton-domaine>.ngrok-free.app'
+#  Sans l'un des Secrets : le composant concerné refuse tout / ne démarre pas,
+#  le reste de la plateforme n'est PAS affecté (boutons inertes, CLI intact).
+# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -100,3 +117,4 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { cpu: 50m, memory: 64Mi }
+

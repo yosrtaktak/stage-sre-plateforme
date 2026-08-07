@@ -138,6 +138,12 @@ spec:
             #     "{\"stringData\":{\"slack-url-warroom\":\"https://hooks.slack.com/services/...\"}}"
             - name: WAR_ROOM_WEBHOOK_FILE
               value: "/etc/slack/slack-url-warroom"
+            # Garde-fou resolve : avant une clôture humaine (clic [Resolve]),
+            # l'adapter demande à Alertmanager si l'alerte crie encore.
+            # Active -> refus tracé ; injoignable -> laissez-passer ; vide =
+            # garde-fou désactivé.
+            - name: ALERTMANAGER_URL
+              value: "http://obs-alertmanager.monitoring.svc.cluster.local:9093"
           ports:
             - containerPort: 8000
           volumeMounts:

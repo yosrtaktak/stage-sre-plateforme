@@ -64,9 +64,10 @@ def _verify(headers, body):
     return hmac.compare_digest(expected, headers.get("X-Slack-Signature", ""))
 
 
-def _forward(verb, alertname, actor):
+def _forward(verb, alertname, actor, actor_display=""):
     body = json.dumps({"alertname": alertname,
                        "actor": f"{actor}@slack",
+                       "actor_display": actor_display,
                        "detail": "clic bouton Slack (war room)"}).encode()
     req = urllib.request.Request(
         f"{BRIDGE_URL}/incident/{verb}", data=body,
@@ -95,8 +96,13 @@ class Handler(BaseHTTPRequestHandler):
             alertname = action.get("value", "")
             user = payload.get("user", {})
             actor = user.get("username") or user.get("name") or "inconnu"
+            # Le payload Slack ne porte que le handle (yosrtaktak6), jamais le
+            # nom d'affichage. La mention <@ID> est rendue par Slack comme le
+            # vrai nom du compte (@yosr taktak) — sans appel API ni token bot.
+            uid = user.get("id", "")
+            actor_display = f"<@{uid}>" if uid else ""
             if verb in ALLOWED_VERBS and alertname:
-                _forward(verb, alertname, actor)
+                _forward(verb, alertname, actor, actor_display)
                 log(f"{verb} sur {alertname} par {actor}")
             else:
                 log(f"action ignorée (verb={verb!r})")
