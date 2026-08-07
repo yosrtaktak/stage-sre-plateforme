@@ -61,8 +61,8 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { cpu: 250m, memory: 384Mi }
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: 1, memory: 512Mi }
       volumes:
         - name: data
           persistentVolumeClaim:
