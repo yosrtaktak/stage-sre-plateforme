@@ -1,0 +1,70 @@
+# =============================================================================
+#  Mailpit — SMTP de laboratoire pour GoAlert (rien ne sort du cluster)
+# -----------------------------------------------------------------------------
+#  Capture TOUS les mails envoyés par GoAlert (codes de vérification,
+#  notifications d'astreinte, escalades) et les affiche dans une web UI :
+#    http://10.0.2.15:32025
+#  Config GoAlert (Admin -> Config -> SMTP) :
+#    Address     : mailpit.monitoring.svc.cluster.local:1025
+#    Disable TLS : coché (Mailpit parle en clair)
+#    Username / Password : vides
+#    From Address: goalert@stage.local
+#  Les adresses des users peuvent être fictives (yosr@stage.local...) :
+#  Mailpit capture tout, quel que soit le destinataire.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  namespace: monitoring
+  labels:
+    app: mailpit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailpit
+  template:
+    metadata:
+      labels:
+        app: mailpit
+    spec:
+      containers:
+        - name: mailpit
+          image: axllent/mailpit:latest
+          ports:
+            - containerPort: 1025   # SMTP
+            - containerPort: 8025   # web UI
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: 8025
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  namespace: monitoring
+  labels:
+    app: mailpit
+spec:
+  type: NodePort
+  selector:
+    app: mailpit
+  ports:
+    - name: smtp
+      port: 1025
+      targetPort: 1025
+    - name: ui
+      port: 8025
+      targetPort: 8025
+      nodePort: 32025
