@@ -194,8 +194,8 @@
     {
       "id": 984,
       "type": "table",
-      "title": "MTTA / MTTR par service et sévérité",
-      "description": "La vue SQL incident_metrics : MTTA moyen (acked_at - opened_at, premier ack), MTTR moyen (closed_at - opened_at), nombre d'incidents et backlog sans ack. Par service/sévérité, JAMAIS par personne (choix assumé). MTTA/MTTR null = aucun incident acké/clos encore dans ce groupe.",
+      "title": "MTTA / MTTR par service et sévérité (7 derniers jours)",
+      "description": "La vue SQL incident_metrics_7j (fenêtre 7 jours — l'all-time rendait les moyennes illisibles dès qu'un incident traînait). MTTA moyen (acked_at - opened_at, premier ack), MTTR moyen (closed_at - opened_at), backlog sans ack. Par service/sévérité, JAMAIS par personne (choix assumé). Lecture : pour les WARNING, l'ack est une revue à froid (parfois le lendemain) alors que la clôture est automatique dès que l'alerte cesse — un MTTA > MTTR y est donc normal et documente le tri de sévérité ; le MTTA « réflexe pager » se lit sur les lignes CRITICAL.",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
       "gridPos": { "h": 8, "w": 16, "x": 8, "y": 1 },
       "fieldConfig": {
@@ -285,7 +285,7 @@
           "source": "url",
           "parser": "backend",
           "format": "table",
-          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incident_metrics",
+          "url": "http://incident-db-api.monitoring.svc.cluster.local:3000/incident_metrics_7j",
           "url_options": { "method": "GET", "data": "" },
           "root_selector": "",
           "columns": [
@@ -351,6 +351,19 @@
                   }
                 ]
               }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Acké à" },
+            "properties": [
+              { "id": "noValue", "value": "⚠ jamais acké" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Résumé" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "auto", "wrapText": true } },
+              { "id": "custom.minWidth", "value": 320 }
             ]
           }
         ]
@@ -445,7 +458,7 @@
     {
       "id": 988,
       "type": "table",
-      "title": "Derniers incidents clos (preuves MTTR)",
+      "title": "Derniers incidents clos (preuves MTTR — « jamais acké » = résolu sans humain)",
       "description": "GET /incidents?status=eq.closed : les 20 dernières résolutions avec leurs trois horodatages — la matière première des moyennes MTTA/MTTR du panel 984.",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity" },
       "gridPos": { "h": 9, "w": 10, "x": 14, "y": 18 },
@@ -468,6 +481,12 @@
                   }
                 ]
               }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Acké" },
+            "properties": [
+              { "id": "noValue", "value": "⚠ jamais acké" }
             ]
           }
         ]

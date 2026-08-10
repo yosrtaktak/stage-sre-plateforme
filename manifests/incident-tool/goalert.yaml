@@ -43,10 +43,13 @@ spec:
                 secretKeyRef: { name: incident-tool, key: GOALERT_DB_URL }
             - name: GOALERT_LISTEN
               value: ":8081"
-            # URL vue par les navigateurs et les liens de notification —
-            # le NodePort du Service incident-tool.
+            # URL vue par les navigateurs et les liens de notification.
+            # 10/08/2026 : « localhost » au lieu de 10.0.2.15 — GoAlert valide
+            # l'origine des requêtes d'auth contre cette URL (CSRF) ; localhost
+            # est vrai depuis la VM (NodePort local) ET depuis Windows (règle
+            # NAT VirtualBox 32082->32082). Avec l'IP, l'accès Windows = 401.
             - name: GOALERT_PUBLIC_URL
-              value: "http://10.0.2.15:32082"
+              value: "http://localhost:32082"
           ports:
             - containerPort: 8081
           # 10/08/2026 : timeout 1 s (défaut) tuait un GoAlert vivant mais lent
