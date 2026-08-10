@@ -75,6 +75,15 @@ prometheus:
         secretName: alertmanager-slack-webhook
         mountPath: /etc/alertmanager/secrets
         readOnly: true
+      # RESTAURÉ le 10/08 : montage du Secret de l'outil d'astreinte (GoAlert
+      # derrière le Service neutre incident-tool). Ce bloc + la route + le
+      # receiver ci-dessous avaient été PERDUS en écrasant ce fichier par une
+      # copie antérieure au 07/08 — ne jamais éditer yosr.yaml sans vérifier
+      # qu'il est au niveau du repo (git diff avant commit).
+      - name: incident-tool-url
+        secretName: incident-tool-url
+        mountPath: /etc/alertmanager/secrets-incident
+        readOnly: true
     config:
       global:
         resolve_timeout: 5m
@@ -97,6 +106,17 @@ prometheus:
           - match_re:
               severity: critical|warning
             receiver: holmes-bridge
+            continue: true
+            group_wait: 30s
+            group_interval: 5m
+            repeat_interval: 4h
+          # RESTAURÉ le 10/08 (câblage GoAlert du 07/08) : les criticals — et
+          # EUX SEULS — partent AUSSI vers l'outil d'astreinte (tri anti-fatigue:
+          # un warning ne réveille personne). continue: true -> l'alerte
+          # poursuit vers slack-critical.
+          - match:
+              severity: critical
+            receiver: incident-tool
             continue: true
             group_wait: 30s
             group_interval: 5m
@@ -167,9 +187,20 @@ prometheus:
         - name: holmes-bridge
           webhook_configs:
             - url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
-              send_resolved: false   # passer à true pour activer le post-mortem
-                                     # (avec POSTMORTEM_ENABLED=true côté bridge)
+              send_resolved: true    # ACTIVÉ (07/08, restauré 10/08) : le bridge
+                                     # reçoit les resolved -> clôture auto des
+                                     # incidents + post-mortem (observé le 10/08 :
+                                     # « closed par alertmanager » à 11h16)
               max_alerts: 5          # borne la taille du payload groupé
+        # RESTAURÉ le 10/08 : receiver de l'outil d'astreinte. URL + token
+        # portés par le Secret incident-tool-url (url_file) — chemin API SANS
+        # tirets (/api/v2/prometheusalertmanager/incoming), 3 corruptions
+        # vécues en le réécrivant à la main : ne JAMAIS inline l'URL ici.
+        - name: incident-tool
+          webhook_configs:
+            - url_file: /etc/alertmanager/secrets-incident/url
+              send_resolved: true    # la fermeture automatique des alertes GoAlert
+              max_alerts: 5
         - name: default
           slack_configs:
             - api_url_file: /etc/alertmanager/secrets/slack-url-default
