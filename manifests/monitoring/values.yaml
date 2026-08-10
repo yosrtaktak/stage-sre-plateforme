@@ -42,13 +42,16 @@ prometheus:
   server:
     persistentVolume:
       enabled: false
+    # 10/08/2026 : OOMKilled en boucle à 512Mi — le churn de séries créé par
+    # les redémarrages massifs de pods gonfle la tête TSDB au-delà de la
+    # limite. 1Gi absorbe les pires journées observées.
     resources:
       requests:
-        memory: 256Mi
-        cpu: 100m
-      limits:
         memory: 512Mi
-        cpu: 300m
+        cpu: 200m
+      limits:
+        memory: 1Gi
+        cpu: 500m
     service:
       type: ClusterIP
     # CORRECTION : le collector OTel pousse les métriques via `prometheusremotewrite`
@@ -68,10 +71,6 @@ prometheus:
         memory: 128Mi
         cpu: 100m
     extraSecretMounts:
-      - name: incident-tool-url
-        mountPath: /etc/secrets/incident-tool
-        secretName: incident-tool-url
-        readOnly: true
       - name: slack-webhook
         secretName: alertmanager-slack-webhook
         mountPath: /etc/alertmanager/secrets
@@ -102,13 +101,6 @@ prometheus:
             group_wait: 30s
             group_interval: 5m
             repeat_interval: 4h
-          - match_re:
-              severity: critical
-            receiver: incident-tool
-            continue: true
-            group_wait: 30s
-            group_interval: 5m
-            repeat_interval: 4h 
           - match:
               severity: critical
             receiver: slack-critical
@@ -175,14 +167,9 @@ prometheus:
         - name: holmes-bridge
           webhook_configs:
             - url: http://holmes-bridge.monitoring.svc.cluster.local:8000/webhook
-              send_resolved: true   # passer à true pour activer le post-mortem
+              send_resolved: false   # passer à true pour activer le post-mortem
                                      # (avec POSTMORTEM_ENABLED=true côté bridge)
               max_alerts: 5          # borne la taille du payload groupé
-        - name: incident-tool
-          webhook_configs:
-            - url_file: /etc/secrets/incident-tool/url
-              send_resolved: true
-              max_alerts: 5
         - name: default
           slack_configs:
             - api_url_file: /etc/alertmanager/secrets/slack-url-default
@@ -869,12 +856,17 @@ grafana:
   # ⚠️  À déplacer dans un Secret pour la prod : voir README (admin.existingSecret).
   adminPassword: admin123
 
-  # Infinity : requis par les panels 941/961 (table des alertes Alertmanager).
-  # Le datasource « alertmanager » natif de Grafana ne peut PAS alimenter un
-  # panel : sa méthode query() renvoie toujours des données vides (il ne sert
-  # qu'à l'UI d'Alerting). Infinity interroge l'API REST /api/v2/alerts.
-  # Téléchargé au démarrage du pod (nécessite l'accès internet du nœud).
+  # AUCUN plugin géré par le chart. Vécu le 06/08/2026 : l'installeur au
+  # boot de Grafana 12 (backgroundinstaller) IGNORE la version — y compris
+  # dans la syntaxe URL;id — et installe toujours le latest (3.11.2, qui
+  # casse le chargement frontend : react/jsx-runtime introuvable, SystemJS
+  # Error#7). Infinity 3.10.1 (panels 941/961 + dashboard
+  # incident-management) est donc installé MANUELLEMENT — il persiste sur
+  # le PVC et, sans GF_INSTALL_PLUGINS, plus rien ne l'écrase :
+  #   kubectl -n monitoring exec deploy/grafana -- \
+  #     grafana cli plugins install yesoreyeram-infinity-datasource 3.10.1
   plugins: []
+
   datasources:
     datasources.yaml:
       apiVersion: 1
@@ -1001,6 +993,9 @@ grafana:
 
   env:
     GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/istio/istio-mesh.json
+    # Ceinture + bretelles avec `plugins: []` ci-dessus : coupe le
+    # préinstalleur de plugins de Grafana 12 (auto-update = le `image:latest`
+    # des plugins). Les plugins déjà sur le PVC restent chargés normalement.
     GF_PLUGINS_PREINSTALL_DISABLE: "true"
 
 # =============================================================================

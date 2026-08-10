@@ -33,6 +33,10 @@ spec:
           # Épingler un tag précis après le PoC (latest = démarrage rapide,
           # mais reproductibilité faible — noter la version affichée au boot).
           image: goalert/goalert:latest
+          # 10/08/2026 : Always + :latest exigeait docker.io à CHAQUE restart ;
+          # le DNS de la VM a flanché -> ImagePullBackOff en boucle. L'image en
+          # cache suffit.
+          imagePullPolicy: IfNotPresent
           env:
             - name: GOALERT_DB_URL
               valueFrom:
@@ -45,14 +49,20 @@ spec:
               value: "http://10.0.2.15:32082"
           ports:
             - containerPort: 8081
+          # 10/08/2026 : timeout 1 s (défaut) tuait un GoAlert vivant mais lent
+          # (VM chargée + Postgres) -> crashloop. /health peut prendre plusieurs
+          # secondes ici : probes larges, on ne tue qu'un pod vraiment mort.
           readinessProbe:
             httpGet: { path: /health, port: 8081 }
             initialDelaySeconds: 10
-            periodSeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 10
           livenessProbe:
             httpGet: { path: /health, port: 8081 }
             initialDelaySeconds: 30
             periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 300m, memory: 256Mi }
@@ -74,3 +84,4 @@ spec:
     - port: 8081
       targetPort: 8081
       nodePort: 32082
+
