@@ -3,23 +3,45 @@
 # le merge à vie). Les CRDs (Istio…) sont validées via le catalogue
 # communautaire datreeio ; les kinds sans schéma sont ignorés (jamais
 # « Invalid », simplement non vérifiables).
-name: validate-manifests
-on: [pull_request]
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-      - name: kustomize build
-        run: |
-          kubectl kustomize manifests/app > /tmp/app.yaml
-      - name: kubeconform
-        run: |
-          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
-          ./kubeconform -strict -summary \
-            -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
-            -ignore-missing-schemas \
-            /tmp/app.yaml
+ name: validate-manifests
+  on: [pull_request]
+
+  permissions:
+    contents: read
+
+  concurrency:
+    group: validate-${{ github.ref }}
+    cancel-in-progress: true
+
+  jobs:
+    validate:
+      runs-on: ubuntu-latest
+      timeout-minutes: 10
+      steps:
+        - uses: actions/checkout@v4
+        - name: Setup kubectl
+          uses: azure/setup-kubectl@v4
+
+        - name: kustomize build (toutes les kustomizations)
+          run: |
+            set -euo pipefail
+            mkdir -p /tmp/rendered
+            for d in $(find manifests -name 'kustomization.yaml' -exec dirname {} \; | sort); do
+              echo "=== rendu : $d"
+              kubectl kustomize "$d" > "/tmp/rendered/$(echo "$d" | tr '/' '_').yaml"
+            done
+            ls -la /tmp/rendered/
+
+        - name: kubeconform (rendus + manifestes ArgoCD)
+          run: |
+            set -euo pipefail
+            curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+            ./kubeconform -strict -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
+              -ignore-missing-schemas \
+              /tmp/rendered/*.yaml
+            find manifests/argoCD -name '*.yaml' -print0 | xargs -0 ./kubeconform -strict -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
+              -ignore-missing-schemas

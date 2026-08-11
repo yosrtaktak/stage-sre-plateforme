@@ -1,0 +1,84 @@
+# =============================================================================
+#  security-scan — l'étage CI du pipeline DevSecOps (rapport du 11/08).
+#  ⚠️ MODE OBSERVATION AU DÉPART : les gates ont exit-code "0" (ils rapportent
+#  sans bloquer). Après 48 h de triage du bruit historique (.trivyignore
+#  justifié), passer les deux lignes marquées « GATE » à "1" et exiger les
+#  checks dans la protection de branche.
+#  Destination : .github/workflows/security-scan.yml
+# =============================================================================
+name: security-scan
+on:
+  pull_request:
+    branches: [stage-yosr]
+  push:
+    branches: [stage-yosr]
+
+# Moindre privilège : le token du workflow ne sait QUE lire le repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:                     # ── chasse aux secrets sur TOUT l'historique
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5      # à épingler par SHA (Renovate)
+        with:
+          fetch-depth: 0               # historique complet — la leçon du PAT ArgoCD
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  manifests-config:            # ── misconfigs K8s (runAsRoot, :latest, NodePort…)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: config
+          scan-ref: manifests/
+          severity: CRITICAL,HIGH
+          exit-code: "0"               # GATE : passer à "1" après le triage
+
+  deps-cve:                    # ── CVE corrigeables dans les dépendances du repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          ignore-unfixed: true         # ne compte que ce qui a un fix disponible
+          exit-code: "0"               # GATE : passer à "1" après le triage
+
+  sbom:                        # ── inventaire SPDX versionné à chaque commit
+    # trivy sbom plutôt que syft : même binaire que les gates, un outil de
+    # moins à maintenir (arbitrage §8.1 du rapport DevSecOps).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: spdx-json
+          output: sbom-${{ github.sha }}.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom-${{ github.sha }}.spdx.json
+
+  lint-workflows:              # ── zizmor : la CI qui se scanne elle-même
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - run: pipx run zizmor .github/workflows/

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":pinDigests"],
+  "kubernetes": { "fileMatch": ["manifests/.+\\.ya?ml$"] },
+  "packageRules": [
+    {
+      "description": "Les montées de version majeures demandent une approbation explicite (dashboard)",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Jamais de major sur les moteurs de BD — la règle 'même major seulement' du moteur de remédiation, appliquée dès la CI",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres", "redis", "mongo"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}

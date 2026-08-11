@@ -1,0 +1,21 @@
+# =============================================================================
+#  .gitleaks.toml — configuration du chasseur de secrets.
+#  Destination : RACINE du repo (.gitleaks.toml)
+#
+#  Règle du jeu (la même que .trivyignore) : on n'allowliste JAMAIS en
+#  silence — chaque entrée est datée, justifiée, et pointe un secret RÉVOQUÉ.
+#
+#  ⚠️ NE PAS décommenter le bloc allowlist avant d'avoir capturé le finding
+#  du premier run (c'est la pièce du post-mortem sécurité) ET vérifié que le
+#  token est bien révoqué côté GitHub.
+# =============================================================================
+[extend]
+# Hérite des règles par défaut de gitleaks (formats GitHub, AWS, Slack, etc.)
+useDefault = true
+
+# --- À décommenter APRÈS le premier run et la révocation (étape 6 du guide) ---
+# [allowlist]
+# description = "Secrets historiques révoqués — traçés au post-mortem sécurité du 11/08/2026"
+# # PAT fine-grained commité le 31/07 (commit 53e3ccfc, manifests/argoCD/repo-stage-sre.yaml),
+# # retiré du suivi le 01/08 (0ad33327), RÉVOQUÉ le 11/08/2026. Chaîne inerte.
+# commits = ["53e3ccfc567e03d596a85717136e8550baadfbc0"]
