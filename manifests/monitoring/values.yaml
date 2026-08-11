@@ -192,15 +192,22 @@ prometheus:
                                      # incidents + post-mortem (observé le 10/08 :
                                      # « closed par alertmanager » à 11h16)
               max_alerts: 5          # borne la taille du payload groupé
-        # RESTAURÉ le 10/08 : receiver de l'outil d'astreinte. URL + token
-        # portés par le Secret incident-tool-url (url_file) — chemin API SANS
-        # tirets (/api/v2/prometheusalertmanager/incoming), 3 corruptions
-        # vécues en le réécrivant à la main : ne JAMAIS inline l'URL ici.
+        # MODIFIÉ le 11/08 : les criticals passent par le goalert-formatter
+        # (traducteur -> API generic de GoAlert) au lieu du chemin
+        # prometheusalertmanager direct — emails lisibles (summary/détails
+        # markdown), dedup par fingerprint, action=close sur les resolved.
+        # URL simple sans token (le token vit dans le Secret goalert-generic
+        # monté dans le formatter). En cas de panne du formatter, secours :
+        # rebasculer sur l'url_file ci-dessous (Secret incident-tool-url,
+        # chemin API SANS tirets, 3 corruptions vécues : ne jamais l'inline).
         - name: incident-tool
           webhook_configs:
-            - url_file: /etc/alertmanager/secrets-incident/url
-              send_resolved: true    # la fermeture automatique des alertes GoAlert
+            - url: http://goalert-formatter.monitoring.svc.cluster.local:8020/webhook
+              send_resolved: true    # le formatter traduit resolved -> action=close
               max_alerts: 5
+            # - url_file: /etc/alertmanager/secrets-incident/url
+            #   send_resolved: true
+            #   max_alerts: 5
         - name: default
           slack_configs:
             - api_url_file: /etc/alertmanager/secrets/slack-url-default
