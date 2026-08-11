@@ -76,8 +76,9 @@ def _build(alert):
 
 def _forward(alert):
     summary, details = _build(alert)
+    token = _token()
     body = {
-        "token": _token(),
+        "token": token,
         "summary": summary[:118],
         "details": details,
         # Fingerprint stable sur toute la vie de l'alerte : firing et
@@ -86,8 +87,11 @@ def _forward(alert):
     }
     if alert.get("status") == "resolved":
         body["action"] = "close"
+    # Token AUSSI en query : certaines versions de GoAlert ne lisent pas le
+    # token dans le corps JSON (401 vécu le 11/08). L'URL est construite par
+    # programme — pas de risque de corruption manuelle.
     req = urllib.request.Request(
-        GOALERT_URL, data=json.dumps(body).encode(),
+        GOALERT_URL + "?token=" + token, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     # Timeout court : Alertmanager attend la réponse (5 alertes max/groupe,
     # il faut rester sous son timeout webhook de 10 s au total).
@@ -136,3 +140,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     log(f"écoute :{PORT}, cible {GOALERT_URL}")
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+
