@@ -32,6 +32,23 @@ spec:
       containers:
         - name: mailpit
           image: axllent/mailpit:latest
+          env:
+            # Relais SMTP sortant (Gmail) : la config (hôte, app password…)
+            # vit dans le Secret mailpit-relay, créé impérativement sur la VM
+            # (repo public — jamais de credential dans Git). Créer le Secret
+            # AVANT d'appliquer ce manifeste, sinon FailedMount.
+            - name: MP_SMTP_RELAY_CONFIG
+              value: /etc/mailpit/relay.yaml
+            # Sans ce flag, le relais n'est que manuel (bouton Release de
+            # l'UI) ; avec, tout mail entrant est relayé automatiquement
+            # (sauf blocked_recipients du relay.yaml : @stage.local reste
+            # capturé en local seulement).
+            - name: MP_SMTP_RELAY_ALL
+              value: "true"
+          volumeMounts:
+            - name: relay
+              mountPath: /etc/mailpit
+              readOnly: true
           ports:
             - containerPort: 1025   # SMTP
             - containerPort: 8025   # web UI
@@ -48,6 +65,10 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
+      volumes:
+        - name: relay
+          secret:
+            secretName: mailpit-relay
 ---
 apiVersion: v1
 kind: Service
@@ -68,3 +89,4 @@ spec:
       port: 8025
       targetPort: 8025
       nodePort: 32025
+
