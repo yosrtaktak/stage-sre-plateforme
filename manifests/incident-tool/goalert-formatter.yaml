@@ -1,0 +1,94 @@
+# =============================================================================
+#  goalert-formatter — traducteur Alertmanager -> GoAlert (API generic).
+#  Le script vit dans la ConfigMap hashée goalert-formatter-script (voir
+#  kustomization.yaml) : chaque push du .py déclenche un rollout automatique.
+#  Prérequis impératif (repo public, jamais dans Git) :
+#    kubectl -n monitoring create secret generic goalert-generic \
+#      --from-literal=token='<clé Generic API du service checkout-sre>'
+#  Créer le Secret AVANT d'appliquer, sinon FailedMount.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goalert-formatter
+  namespace: monitoring
+  labels:
+    app: goalert-formatter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: goalert-formatter
+  template:
+    metadata:
+      labels:
+        app: goalert-formatter
+    spec:
+      containers:
+        - name: formatter
+          image: python:3.11-slim
+          command: ["python", "/app/goalert-formatter.py"]
+          env:
+            - name: GOALERT_URL
+              value: http://incident-tool.monitoring.svc.cluster.local:8081/api/v2/generic/incoming
+            - name: GOALERT_TOKEN_FILE
+              value: /etc/goalert/token
+          ports:
+            - containerPort: 8020
+          volumeMounts:
+            - name: script
+              mountPath: /app
+              readOnly: true
+            - name: goalert-token
+              mountPath: /etc/goalert
+              readOnly: true
+          # Le nœud est lent au boot (vécu le 11/08 : HolmesGPT tué en pleine
+          # phase d'import) : startupProbe généreuse, liveness tolérante.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8020
+            periodSeconds: 5
+            failureThreshold: 24        # jusqu'à 2 min pour démarrer
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8020
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8020
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: script
+          configMap:
+            name: goalert-formatter-script
+        - name: goalert-token
+          secret:
+            secretName: goalert-generic
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goalert-formatter
+  namespace: monitoring
+  labels:
+    app: goalert-formatter
+spec:
+  selector:
+    app: goalert-formatter
+  ports:
+    - name: http
+      port: 8020
+      targetPort: 8020

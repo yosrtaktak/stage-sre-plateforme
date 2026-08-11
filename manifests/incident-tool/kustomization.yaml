@@ -3,7 +3,13 @@ resources:
   - postgres.yaml
   - goalert.yaml
   - incident-db-api.yaml
+  - goalert-formatter.yaml
 configMapGenerator:
   - name: incident-postgres-init
     files:
       - init-databases.sh
+  # Script du traducteur Alertmanager -> GoAlert : ConfigMap hashée, un push
+  # du .py = rollout auto du pod (même mécanique que le bridge).
+  - name: goalert-formatter-script
+    files:
+      - goalert-formatter.py
