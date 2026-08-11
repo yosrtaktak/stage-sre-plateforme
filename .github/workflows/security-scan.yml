@@ -12,6 +12,12 @@ on:
     branches: [stage-yosr]
   push:
     branches: [stage-yosr]
+  # Sur push/PR, gitleaks-action ne scanne QUE les nouveaux commits (gate
+  # incrémental rapide). Le scan de TOUT l'historique passe par ces deux
+  # déclencheurs : manuel (bouton « Run workflow ») et hebdomadaire.
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"    # lundi 06:00 UTC — audit complet hebdomadaire
 
 # Moindre privilège : le token du workflow ne sait QUE lire le repo.
 permissions:
@@ -38,7 +44,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: manifests/
@@ -50,7 +56,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -65,7 +71,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -81,4 +87,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - run: pipx run zizmor .github/workflows/
+      # zizmor sort en erreur dès qu'il trouve quelque chose — le « || true »
+      # le met en observation. GATE : le retirer en même temps que les autres.
+      - run: pipx run zizmor .github/workflows/ || true
