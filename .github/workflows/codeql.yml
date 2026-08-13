@@ -38,3 +38,10 @@ jobs:
           languages: python
           config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@v3
+        with:
+          upload: never          # fork : l'API code-scanning est bridée
+          output: codeql-results
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif-${{ github.sha }}
+          path: codeql-results
