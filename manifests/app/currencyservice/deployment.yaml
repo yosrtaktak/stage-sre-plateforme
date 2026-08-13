@@ -22,7 +22,7 @@ spec:
       serviceAccountName: currencyservice
       containers:
         - name: server
-          image: yosrtaktak/currencyservice:v1
+          image: yosrtaktak/currencyservice:v1@sha256:8bab98f6dcbdd8e45dcf264db58c0f673eabab2c2c301ce1163d646069fef14f
           ports:
             - containerPort: 7000
           env:

@@ -22,7 +22,7 @@ spec:
       serviceAccountName: productcatalogservice
       containers:
         - name: server
-          image: yosrtaktak/productcatalogservice:v1
+          image: yosrtaktak/productcatalogservice:v1@sha256:a114380b3801f9136cf3c3eaec5be55a77667dd76692b7b857cafd27c6b7b211
           ports:
             - containerPort: 3550
           env:

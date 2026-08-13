@@ -32,7 +32,7 @@ spec:
         - name: goalert
           # Épingler un tag précis après le PoC (latest = démarrage rapide,
           # mais reproductibilité faible — noter la version affichée au boot).
-          image: goalert/goalert:latest
+          image: goalert/goalert:latest@sha256:5f26d329de6563f718926600e3a8e7bb4599eb110394d56c77c9c34d4c4be499
           # 10/08/2026 : Always + :latest exigeait docker.io à CHAQUE restart ;
           # le DNS de la VM a flanché -> ImagePullBackOff en boucle. L'image en
           # cache suffit.

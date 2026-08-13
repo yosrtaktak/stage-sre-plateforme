@@ -114,7 +114,7 @@ spec:
       serviceAccountName: chaos-grafana-annotator
       containers:
         - name: annotator
-          image: rancher/kubectl:v1.29.3
+          image: rancher/kubectl:v1.29.3@sha256:b5b56709419dda684068519357ebc07848f9dc360d37f4716f246705968c0ffa
           command: ["/bin/sh", "-c"]
           args:
             - apk add --no-cache curl >/dev/null 2>&1; sh /scripts/watch.sh

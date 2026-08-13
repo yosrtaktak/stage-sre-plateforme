@@ -22,7 +22,7 @@ spec:
       serviceAccountName: emailservice
       containers:
         - name: server
-          image: yosrtaktak/emailservice:v1
+          image: yosrtaktak/emailservice:v1@sha256:207f08928d9fb2f985c241ec167b8a66f0150289be8636eadbcebb3864ca7cef
           ports:
             - containerPort: 8080
           env:

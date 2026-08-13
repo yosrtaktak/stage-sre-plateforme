@@ -23,7 +23,7 @@ spec:
       serviceAccountName: frontend
       containers:
         - name: server
-          image: yosrtaktak/frontend:v1
+          image: yosrtaktak/frontend:v1@sha256:6361e4654308155af960237457aca30b04219c0434734e490c3cadab948c7eba
           ports:
             - containerPort: 8080
           env:
