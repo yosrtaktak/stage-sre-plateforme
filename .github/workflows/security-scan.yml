@@ -22,6 +22,7 @@ on:
 # Moindre privilège : le token du workflow ne sait QUE lire le repo.
 permissions:
   contents: read
+  pull-requests: read   # gitleaks-action (event PR) : lister les commits de la PR
 
 concurrency:
   group: security-${{ github.ref }}
