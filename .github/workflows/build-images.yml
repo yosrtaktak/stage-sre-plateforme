@@ -1,0 +1,101 @@
+# =============================================================================
+#  build-images — l'étage build du pipeline DevSecOps (nouveau, 13/08).
+#  Déclenché quand le code du bridge change : buildx → push GHCR →
+#  trivy image (GATE ARMÉ dès le départ : image neuve = zéro dette
+#  historique à trier, contrairement aux scans fs/config) → SBOM par trivy
+#  (syft ⊂ trivy, arbitrage §8.1) → cosign keyless (signature + attestation
+#  SBOM sur le DIGEST, jamais sur le tag mutable).
+#  cosign sort ainsi du statut « écarté » du rapport : on build désormais.
+#  La release = PR de bump du tag+digest dans le manifest (le langage que le
+#  moteur Remediation-as-PR parle déjà) ; l'admission StackRox vérifiera la
+#  signature au déploiement — la boucle supply chain se ferme.
+#  ⚠️ Après le PREMIER build : rendre le package GHCR public (Package
+#  settings → Change visibility) sinon la VM K3s ne peut pas puller sans
+#  imagePullSecret.
+#  Destination : .github/workflows/build-images.yml
+# =============================================================================
+name: build-images
+on:
+  push:
+    branches: [stage-yosr]
+    paths:
+      - 'manifests/sre-agent/bridge/src/**'
+      - 'manifests/sre-agent/bridge/Dockerfile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write     # push GHCR
+  id-token: write     # cosign keyless (identité OIDC du workflow)
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false   # ne jamais annuler un push d'image à mi-course
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/sre-bridge
+
+jobs:
+  build-sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tag immuable dérivé du commit — jamais de :latest (la leçon goalert,
+      # bientôt policy d'admission StackRox).
+      - id: meta
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: manifests/sre-agent/bridge
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          provenance: false   # l'attestation qui fait foi est celle de cosign
+
+      # GATE actif (exit-code 1) dès le premier build.
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # SBOM de l'image (pas du repo : celui-là existe déjà dans security-scan).
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          format: spdx-json
+          output: bridge-${{ steps.meta.outputs.tag }}.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-bridge-${{ steps.meta.outputs.tag }}
+          path: bridge-${{ steps.meta.outputs.tag }}.spdx.json
+
+      - uses: sigstore/cosign-installer@v3
+      - name: cosign sign + attest (keyless, sur le digest)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          cosign attest --yes --type spdxjson \
+            --predicate "bridge-${TAG}.spdx.json" "${IMAGE}@${DIGEST}"
+
+      - name: Référence à coller dans la PR de bump
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          echo "image: ${IMAGE}:${TAG}@${DIGEST}"

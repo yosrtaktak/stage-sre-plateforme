@@ -1,0 +1,39 @@
+# =============================================================================
+#  codeql — SAST scopé au code Python de l'agent (§9.1 du rapport DevSecOps).
+#  Pourquoi scopé : le repo est à ~95 % des manifests/values (CodeQL ignore le
+#  YAML — c'est le territoire de trivy config + StackRox) et le code hérité du
+#  fork microservices-demo (Go/C#/Java upstream) n'est pas maintenu ici — le
+#  scanner n'y produirait que du bruit non actionnable.
+#  Destination : .github/workflows/codeql.yml
+#  Config      : .github/codeql/codeql-config.yml (fichier séparé du staging)
+# =============================================================================
+name: codeql
+on:
+  pull_request:
+    branches: [stage-yosr]
+    paths: ['manifests/sre-agent/**']
+  push:
+    branches: [stage-yosr]
+    paths: ['manifests/sre-agent/**']
+  schedule:
+    - cron: "0 5 * * 1"   # lundi 05:00 UTC — avant l'audit gitleaks de 06:00
+
+permissions:
+  contents: read
+  security-events: write   # publication des findings dans l'onglet Security
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v3

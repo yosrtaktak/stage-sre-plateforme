@@ -1,0 +1,3 @@
+name: codeql-agent-only
+paths:
+  - manifests/sre-agent

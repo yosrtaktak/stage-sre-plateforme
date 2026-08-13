@@ -1,0 +1,46 @@
+# =============================================================================
+#  agent-ci — qualité du code Python de l'agent (bridge, adapter, remediation,
+#  slack-gateway). Deux jobs :
+#    lint : ruff — MODE OBSERVATION (« || true ») le temps de traiter le
+#           backlog des .py historiques. GATE : retirer le || true ensuite.
+#    test : pytest sur les garde-fous de l'allow-list — BLOQUANT dès le
+#           jour 1 (suite neuve, 15 tests verts au moment du commit).
+#  `test` a vocation à rejoindre les required checks de la protection de
+#  branche (Phase 6) aux côtés de validate/secrets/deps-cve/manifests-config.
+#  Destination : .github/workflows/agent-ci.yml
+# =============================================================================
+name: agent-ci
+on:
+  pull_request:
+    paths: ['manifests/sre-agent/**']
+  push:
+    branches: [stage-yosr]
+    paths: ['manifests/sre-agent/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # GATE : retirer « || true » une fois le backlog ruff purgé.
+      - run: pipx run ruff check manifests/sre-agent/ || true
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"     # même interpréteur que l'image du bridge
+      - run: pip install "pytest==8.*"
+      - run: python -m pytest manifests/sre-agent/bridge/tests/ -v

@@ -1,47 +1,63 @@
 # CI de validation — required status check de la branche stage-yosr.
 # Tourne sur TOUTES les PRs (un required check jamais déclenché bloquerait
-# le merge à vie). Les CRDs (Istio…) sont validées via le catalogue
+# le merge à vie). Les CRDs (Istio, ArgoCD…) sont validées via le catalogue
 # communautaire datreeio ; les kinds sans schéma sont ignorés (jamais
 # « Invalid », simplement non vérifiables).
- name: validate-manifests
-  on: [pull_request]
+# Étendu le 11/08/2026 : TOUTES les kustomizations du repo (incident-tool,
+# sre-agent/bridge, rag… — pas seulement manifests/app) + les manifestes
+# ArgoCD, avec les garde-fous CI standard (permissions min, timeout,
+# concurrency). Le job garde son nom `validate` : c'est lui que la
+# protection de branche connaît.
+name: validate-manifests
+on:
+  pull_request:
+  # 13/08 : le run PR bloque AVANT merge (required check) ; le run push est
+  # (1) le filet des pushes directs tant que la Phase 6 (protection de
+  # branche) n'est pas active, (2) ensuite le canari post-merge — deux PRs
+  # vertes séparément peuvent produire un état mergé invalide, et c'est cet
+  # état-là qu'ArgoCD déploie.
+  push:
+    branches: [stage-yosr]
+  workflow_dispatch:
 
-  permissions:
-    contents: read
+permissions:
+  contents: read
 
-  concurrency:
-    group: validate-${{ github.ref }}
-    cancel-in-progress: true
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
 
-  jobs:
-    validate:
-      runs-on: ubuntu-latest
-      timeout-minutes: 10
-      steps:
-        - uses: actions/checkout@v4
-        - name: Setup kubectl
-          uses: azure/setup-kubectl@v4
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4        # épinglage par SHA : Renovate s'en charge
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
 
-        - name: kustomize build (toutes les kustomizations)
-          run: |
-            set -euo pipefail
-            mkdir -p /tmp/rendered
-            for d in $(find manifests -name 'kustomization.yaml' -exec dirname {} \; | sort); do
-              echo "=== rendu : $d"
-              kubectl kustomize "$d" > "/tmp/rendered/$(echo "$d" | tr '/' '_').yaml"
-            done
-            ls -la /tmp/rendered/
+      # Chaque kustomization du repo doit se RENDRE sans erreur — c'est
+      # exactement ce qu'ArgoCD fera au sync ; on le découvre ici, pas en prod.
+      - name: kustomize build (toutes les kustomizations)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rendered
+          for d in $(find manifests -name 'kustomization.yaml' -exec dirname {} \; | sort); do
+            echo "=== rendu : $d"
+            kubectl kustomize "$d" > "/tmp/rendered/$(echo "$d" | tr '/' '_').yaml"
+          done
+          ls -la /tmp/rendered/
 
-        - name: kubeconform (rendus + manifestes ArgoCD)
-          run: |
-            set -euo pipefail
-            curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
-            ./kubeconform -strict -summary \
-              -schema-location default \
-              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
-              -ignore-missing-schemas \
-              /tmp/rendered/*.yaml
-            find manifests/argoCD -name '*.yaml' -print0 | xargs -0 ./kubeconform -strict -summary \
-              -schema-location default \
-              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
-              -ignore-missing-schemas
+      - name: kubeconform (rendus + manifestes ArgoCD)
+        run: |
+          set -euo pipefail
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
+            -ignore-missing-schemas \
+            /tmp/rendered/*.yaml
+          find manifests/argoCD -name '*.yaml' -print0 | xargs -0 ./kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
+            -ignore-missing-schemas
