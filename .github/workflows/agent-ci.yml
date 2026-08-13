@@ -1,8 +1,8 @@
 # =============================================================================
 #  agent-ci — qualité du code Python de l'agent (bridge, adapter, remediation,
 #  slack-gateway). Deux jobs :
-#    lint : ruff — MODE OBSERVATION (« || true ») le temps de traiter le
-#           backlog des .py historiques. GATE : retirer le || true ensuite.
+#    lint : ruff — MODE OBSERVATION (« ») le temps de traiter le
+#           backlog des .py historiques. GATE : retirer le ensuite.
 #    test : pytest sur les garde-fous de l'allow-list — BLOQUANT dès le
 #           jour 1 (suite neuve, 15 tests verts au moment du commit).
 #  `test` a vocation à rejoindre les required checks de la protection de
@@ -31,8 +31,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      # GATE : retirer « || true » une fois le backlog ruff purgé.
-      - run: pipx run ruff check manifests/sre-agent/ || true
+      # GATE : retirer « » une fois le backlog ruff purgé.
+      - run: pipx run ruff check manifests/sre-agent/
 
   test:
     runs-on: ubuntu-latest
