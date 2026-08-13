@@ -4,7 +4,8 @@
 #  slack-gateway est LE SEUL composant exposé à internet (via le tunnel) :
 #  il vérifie la signature Slack et ne sait faire que 2 verbes du bridge.
 #  Le bridge, GoAlert, Grafana restent inaccessibles de l'extérieur.
-#  Le .py vit dans la MÊME ConfigMap hashée que le bridge (kustomization).
+#  13/08/2026 : le .py vit dans l'image ghcr.io/yosrtaktak/sre-bridge (la
+#  même que le bridge — seul le command change), plus dans une ConfigMap.
 #
 #  Secrets impératifs (jamais dans Git) :
 #    kubectl -n monitoring create secret generic slack-gateway \
@@ -34,8 +35,8 @@ spec:
     spec:
       containers:
         - name: gateway
-          image: python:3.11-slim
-          command: ["python", "/app/slack-gateway.py"]
+          image: ghcr.io/yosrtaktak/sre-bridge:sha-1af884e@sha256:53fe56f2518725b7ac73c2f5a942789df0152014fc0eabbb91914250b4c583ed
+          command: ["python", "/app/src/slack-gateway.py"]
           env:
             - name: BRIDGE_URL
               value: "http://holmes-bridge.monitoring.svc.cluster.local:8000"
@@ -44,9 +45,6 @@ spec:
           ports:
             - containerPort: 8010
           volumeMounts:
-            - name: script            # la ConfigMap hashée du bridge
-              mountPath: /app
-              readOnly: true
             - name: signing
               mountPath: /etc/slack-gw
               readOnly: true
@@ -57,10 +55,11 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { cpu: 50m, memory: 64Mi }
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
       volumes:
-        - name: script
-          configMap:
-            name: holmes-bridge-script
         - name: signing
           secret:
             secretName: slack-gateway
