@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", ":pinDigests"],
+  "extends": ["config:recommended"],
+  "pinDigests": true,
   "kubernetes": { "fileMatch": ["manifests/.+\\.ya?ml$"] },
   "packageRules": [
     {
