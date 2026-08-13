@@ -188,7 +188,7 @@ def _gh(method, path, body=None, token=None):
             detail = e.read().decode(errors="replace")[:200]
         except Exception:
             pass
-        raise RuntimeError(f"GitHub {method} {path} -> {e.code} {detail}")
+        raise RuntimeError(f"GitHub {method} {path} -> {e.code} {detail}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +298,8 @@ def _apply(text, dotted, old, new):
     lines = text.split("\n")
     # documents séparés par --- : le chemin doit matcher dans UN seul
     bounds, start = [], 0
-    for i, l in enumerate(lines):
-        if l.strip() == "---":
+    for i, ln in enumerate(lines):
+        if ln.strip() == "---":
             bounds.append((start, i))
             start = i + 1
     bounds.append((start, len(lines)))
