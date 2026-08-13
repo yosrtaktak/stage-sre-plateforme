@@ -99,6 +99,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      # zizmor sort en erreur dès qu'il trouve quelque chose — le « || true »
+      # zizmor sort en erreur dès qu'il trouve quelque chose — le « »
       # le met en observation. GATE : le retirer en même temps que les autres.
-      - run: pipx run zizmor .github/workflows/ || true
+      - run: pipx run zizmor .github/workflows/
