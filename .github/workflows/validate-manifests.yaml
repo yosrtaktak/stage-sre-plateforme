@@ -33,6 +33,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4        # épinglage par SHA : Renovate s'en charge
+        with:
+          persist-credentials: false
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
 
