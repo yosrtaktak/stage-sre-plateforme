@@ -49,6 +49,7 @@ jobs:
         with:
           scan-type: config
           scan-ref: manifests/
+          trivyignores: .trivyignore.yaml
           severity: CRITICAL
           exit-code: "1"
 
