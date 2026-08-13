@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read          # l'action CodeQL lit les métadonnées du run
   security-events: write   # publication des findings dans l'onglet Security
 
 concurrency:
