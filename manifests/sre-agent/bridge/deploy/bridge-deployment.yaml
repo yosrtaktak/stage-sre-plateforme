@@ -43,8 +43,7 @@ spec:
       serviceAccountName: holmes-bridge
       containers:
         - name: bridge
-          image: python:3.11-slim
-          command: ["python", "/app/holmes-bridge.py"]
+          image: ghcr.io/yosrtaktak/sre-bridge:sha-1af884e@sha256:53fe56f2518725b7ac73c2f5a942789df0152014fc0eabbb91914250b4c583ed
           env:
             - name: HOLMES_URL
               value: "http://holmesgpt-holmes.monitoring.svc.cluster.local:80"
@@ -147,9 +146,6 @@ spec:
           ports:
             - containerPort: 8000
           volumeMounts:
-            - name: script
-              mountPath: /app
-              readOnly: true
             - name: slack
               mountPath: /etc/slack
               readOnly: true
@@ -172,10 +168,11 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { cpu: 100m, memory: 96Mi }
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
       volumes:
-        - name: script
-          configMap:
-            name: holmes-bridge-script
         - name: slack
           secret:
             secretName: holmes-slack-webhook
