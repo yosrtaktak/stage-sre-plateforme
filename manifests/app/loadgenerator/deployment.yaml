@@ -22,7 +22,7 @@ spec:
       serviceAccountName: loadgenerator
       containers:
         - name: main
-          image: yosrtaktak/loadgenerator:v1
+          image: yosrtaktak/loadgenerator:v1@sha256:4fd5722f0ee0bb9135c59f679b4847e18f88213a7cf1b1aa8ffb5d046c0cd292
           env:
             - name: FRONTEND_ADDR
               value: "frontend:80"

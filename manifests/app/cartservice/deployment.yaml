@@ -22,7 +22,7 @@ spec:
       serviceAccountName: cartservice
       containers:
         - name: server
-          image: yosrtaktak/cartservice:v1
+          image: yosrtaktak/cartservice:v1@sha256:d60ecb1e083ddc62d8350f97050b20414619000dc55a5a645bdae09bba6fbe72
           ports:
             - containerPort: 7070
           env:

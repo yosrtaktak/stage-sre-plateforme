@@ -30,7 +30,7 @@ spec:
       containers:
         - name: postgrest
           # Épingler un tag précis après le PoC (noter la version au boot).
-          image: postgrest/postgrest:latest
+          image: postgrest/postgrest:latest@sha256:5922bde07147b82b1c9d8f749e48c1e5b99ebb233f3888bb7ab65f07cf4ac82d
           env:
             - name: PGRST_DB_URI
               valueFrom:

@@ -22,7 +22,7 @@ spec:
       serviceAccountName: shippingservice
       containers:
         - name: server
-          image: yosrtaktak/shippingservice:v1
+          image: yosrtaktak/shippingservice:v1@sha256:dcdf378d3a5b162c2a92ac349eebcfa8e946666a2f0f311a7dfa86f1aeaa16eb
           ports:
             - containerPort: 50051
           env:

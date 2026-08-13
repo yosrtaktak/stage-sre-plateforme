@@ -100,7 +100,7 @@ spec:
     spec:
       containers:
         - name: ngrok
-          image: ngrok/ngrok:latest
+          image: ngrok/ngrok:latest@sha256:14d80d083e5b53145f416bbbd36238336c9de4016c43fd950eb2eb845670583b
           args:
             - "http"
             - "http://slack-gateway.monitoring.svc.cluster.local:8010"

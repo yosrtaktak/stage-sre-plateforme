@@ -22,7 +22,7 @@ spec:
       serviceAccountName: paymentservice
       containers:
         - name: server
-          image: yosrtaktak/paymentservice:v1
+          image: yosrtaktak/paymentservice:v1@sha256:c12f718f8e448581af8c761a4d3fe0516410933c4db8880974bea91cba27b0d4
           ports:
             - containerPort: 50051
           env:

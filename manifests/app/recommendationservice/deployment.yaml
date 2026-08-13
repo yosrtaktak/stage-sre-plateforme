@@ -22,7 +22,7 @@ spec:
       serviceAccountName: recommendationservice
       containers:
         - name: server
-          image: yosrtaktak/recommendationservice:v1
+          image: yosrtaktak/recommendationservice:v1@sha256:9eedd8372c753836ca04ac65f3626ede4d8cf8f3c91e7b2577410a754750ffc5
           ports:
             - containerPort: 8080
           env:

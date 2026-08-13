@@ -86,7 +86,7 @@ spec:
                       - apiGroups: ["litmuschaos.io"]
                         resources: ["chaosengines", "chaosexperiments", "chaosresults"]
                         verbs: ["create", "list", "get", "patch", "update", "delete"]
-                    image: litmuschaos/go-runner:3.16.0
+                    image: litmuschaos/go-runner:3.16.0@sha256:964cfae43da7662d99400e24ab92592374be1f7322a5f4e03160d7c789ac093a
                     imagePullPolicy: Always
                     args:
                       - -c
@@ -187,7 +187,7 @@ spec:
                       - apiGroups: ["litmuschaos.io"]
                         resources: ["chaosengines", "chaosexperiments", "chaosresults"]
                         verbs: ["create", "list", "get", "patch", "update", "delete"]
-                    image: litmuschaos/go-runner:3.16.0
+                    image: litmuschaos/go-runner:3.16.0@sha256:964cfae43da7662d99400e24ab92592374be1f7322a5f4e03160d7c789ac093a
                     imagePullPolicy: Always
                     args:
                       - -c
@@ -224,7 +224,7 @@ spec:
       metadata: {}
       container:
         name: ""
-        image: litmuschaos/k8s:latest
+        image: litmuschaos/k8s:latest@sha256:64ea34e5c69447b27b984b135779882a1d774dfa1fa9d327aa78b828db75725e
         command:
           - sh
           - -c
@@ -283,7 +283,7 @@ spec:
           weight: "10"
       container:
         name: ""
-        image: litmuschaos/litmus-checker:latest
+        image: litmuschaos/litmus-checker:latest@sha256:33567033f16a5b8565312e157e04ce83a87a07b71f7f91414a0df0cb04027db2
         args:
           - -file=/tmp/chaosengine-pay-net-loss.yaml
           - -saveName=/tmp/engine-name
@@ -335,7 +335,7 @@ spec:
           weight: "10"
       container:
         name: ""
-        image: litmuschaos/litmus-checker:latest
+        image: litmuschaos/litmus-checker:latest@sha256:33567033f16a5b8565312e157e04ce83a87a07b71f7f91414a0df0cb04027db2
         args:
           - -file=/tmp/chaosengine-prodcat-pod-del.yaml
           - -saveName=/tmp/engine-name
@@ -346,7 +346,7 @@ spec:
       metadata: {}
       container:
         name: ""
-        image: litmuschaos/k8s:latest
+        image: litmuschaos/k8s:latest@sha256:64ea34e5c69447b27b984b135779882a1d774dfa1fa9d327aa78b828db75725e
         command:
           - sh
           - -c

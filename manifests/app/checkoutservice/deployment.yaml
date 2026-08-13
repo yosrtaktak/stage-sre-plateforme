@@ -22,7 +22,7 @@ spec:
       serviceAccountName: checkoutservice
       containers:
         - name: server
-          image: yosrtaktak/checkoutservice:v1
+          image: yosrtaktak/checkoutservice:v1@sha256:2780d40c48398956e515993e4541be4f514e8bccb5d99647a2516d9afea286bc
           ports:
             - containerPort: 5050
           env:

@@ -22,7 +22,7 @@ spec:
       serviceAccountName: adservice
       containers:
         - name: server
-          image: yosrtaktak/adservice:v1
+          image: yosrtaktak/adservice:v1@sha256:ddf4813cc78fcb86d6e11268cca597bd380d524a0de6b15a0d30f9bdfcb1a319
           ports:
             - containerPort: 9555
           env:
