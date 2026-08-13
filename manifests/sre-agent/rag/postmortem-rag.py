@@ -117,7 +117,7 @@ def _embed(text):
 
 
 def _cosine(a, b):
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
     return dot / (na * nb) if na and nb else 0.0
@@ -168,7 +168,7 @@ def _payload(title, text, tags, meta):
     les champs sont dérivés du titre/texte/tags par heuristique.
     """
     m = meta or {}
-    first = next((l.strip() for l in text.splitlines() if l.strip()), "")
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     dt = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", title)
     return {
         "title": title,
