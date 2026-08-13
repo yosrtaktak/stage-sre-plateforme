@@ -1,0 +1,14 @@
+ misconfigurations:
+    - id: KSV-0046
+      paths:
+        - "argoCD/argocd-server.yaml"
+      statement: "ClusterRole upstream Argo CD : delete sur * = mecanisme de prune du GitOps (manifest officiel, non modifiable sans casser le sync)."
+    - id: KSV-0046
+      paths:
+        - "monitoring/charts/kiali/templates/role.yaml"
+      statement: "Chart Kiali vendore : lecture large des CRDs Istio requise par la console mesh (verbes get/list/watch uniquement)."
+    - id: KSV-0041
+      paths:
+        - "monitoring/charts/loki/templates/backend/clusterrole.yaml"
+        - "monitoring/charts/prometheus/charts/kube-state-metrics/templates/role.yaml"
+      statement: "Charts vendores (Loki, kube-state-metrics) : acces secrets prevu par les templates upstream (regles sidecar / metriques de metadonnees)."
