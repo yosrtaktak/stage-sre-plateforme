@@ -14,7 +14,7 @@ charset-normalizer==3.4.3
     # via requests
 click==8.3.0
     # via flask
-configargparse==1.7.1
+configargparse==1.7.5
     # via locust
 faker==40.1.0
     # via -r requirements.in
