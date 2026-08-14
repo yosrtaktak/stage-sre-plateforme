@@ -12,7 +12,6 @@
 name: agent-ci
 on:
   pull_request:
-    paths: ['manifests/sre-agent/**']
   push:
     branches: [stage-yosr]
     paths: ['manifests/sre-agent/**']
