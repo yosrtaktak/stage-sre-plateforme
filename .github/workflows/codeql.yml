@@ -11,10 +11,10 @@ name: codeql
 on:
   pull_request:
     branches: [stage-yosr]
-    paths: ['manifests/sre-agent/**']
+    paths: ['manifests/sre-agent/**', '.github/workflows/codeql.yml', '.github/codeql/**']
   push:
     branches: [stage-yosr]
-    paths: ['manifests/sre-agent/**']
+    paths: ['manifests/sre-agent/**', '.github/workflows/codeql.yml', '.github/codeql/**']
   schedule:
     - cron: "0 5 * * 1"   # lundi 05:00 UTC — avant l'audit gitleaks de 06:00
 
@@ -40,10 +40,3 @@ jobs:
           languages: python
           config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
-        with:
-          upload: never          # fork : l'API code-scanning est bridée
-          output: codeql-results
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: codeql-sarif-${{ github.sha }}
-          path: codeql-results
