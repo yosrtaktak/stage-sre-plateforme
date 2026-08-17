@@ -98,6 +98,17 @@ prometheus:
               alertname: Watchdog
             receiver: watchdog-channel
             repeat_interval: 5m
+          # AJOUT (phase C) : les violations StackRox entrent dans le circuit
+          # de l'agent, et LUI SEUL. continue:false protege l'astreinte du
+          # bruit securite (tri anti-fatigue du 10/08 preserve).
+          - match:
+              source: stackrox
+            receiver: holmes-bridge
+            continue: false
+            group_by: ['policy', 'deployment']
+            group_wait: 30s
+            group_interval: 5m
+            repeat_interval: 12h
           # AJOUT (agent SRE) : chaque alerte warning/critical part AUSSI vers
           # le bridge HolmesGPT. `continue: true` -> l'alerte poursuit ensuite
           # vers slack-critical / default : le pipeline Slack existant est
