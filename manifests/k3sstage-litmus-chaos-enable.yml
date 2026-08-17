@@ -4123,8 +4123,8 @@ metadata:
   name: subscriber-secret
   namespace: litmus
 stringData:
-  INFRA_ID: 0d371cfe-b740-4043-83dc-297ec8987b91
-  ACCESS_KEY: UitU8JTi4Qpp5Wgbr91dU3rNY1FTOOhR
+  INFRA_ID: SET_AT_REGISTRATION
+  ACCESS_KEY: SET_AT_REGISTRATION
 ---
 apiVersion: apps/v1
 kind: Deployment

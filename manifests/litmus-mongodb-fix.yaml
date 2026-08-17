@@ -6,7 +6,6 @@ mongodb:
   auth:
     enabled: true
     rootUser: "root"
-    rootPassword: "1234"
-    replicaSetKey: "a64bNkYkHi3m7sGJ3oYFINsSjxIcMZKhprCvWlNEnjs="
+    existingSecret: "litmus-mongodb"
   persistence:
     enabled: true
