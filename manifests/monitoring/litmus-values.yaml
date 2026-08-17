@@ -389,9 +389,9 @@ mongodb:
   auth:
     enabled: true
     rootUser: "root"
-    rootPassword: "1234"
+    rootPassword: ""
     # -- existingSecret Existing secret with MongoDB(&reg;) credentials (keys: `mongodb-passwords`, `mongodb-root-password`, `mongodb-metrics-password`, ` mongodb-replica-set-key`)
-    existingSecret: ""
+    existingSecret: "litmus-mongodb"
   architecture: replicaset
   replicaCount: 3
   persistence:
