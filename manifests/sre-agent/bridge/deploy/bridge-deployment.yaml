@@ -43,7 +43,7 @@ spec:
       serviceAccountName: holmes-bridge
       containers:
         - name: bridge
-          image: ghcr.io/yosrtaktak/sre-bridge:sha-1af884e@sha256:53fe56f2518725b7ac73c2f5a942789df0152014fc0eabbb91914250b4c583ed
+          image: ghcr.io/yosrtaktak/sre-bridge:sha-bcc57d8@sha256:6b81a7fce7763b54d579ca64aa3cb9b24a841ade5ad3f039233f3081732f4e1e
           env:
             - name: HOLMES_URL
               value: "http://holmesgpt-holmes.monitoring.svc.cluster.local:80"
@@ -143,6 +143,18 @@ spec:
             # garde-fou désactivé.
             - name: ALERTMANAGER_URL
               value: "http://obs-alertmanager.monitoring.svc.cluster.local:9093"
+            # --- phase D : le toolset securite (EPSS / KEV / Central) ---
+            - name: ROX_API_TOKEN        # jeton Central, role Analyst (RO)
+              valueFrom:
+                secretKeyRef:
+                  name: stackrox-api-token
+                  key: token
+            - name: CENTRAL_API
+              value: "https://central.stackrox.svc.cluster.local:443"
+            - name: SEC_CACHE_DIR        # sur le PVC /state, donc PERSISTANT :
+              value: "/state/security-context"   # le catalogue KEV (~2 Mo) ne
+                                                 # se retelecharge pas a chaque
+                                                 # redemarrage du pod.
           ports:
             - containerPort: 8000
           volumeMounts:
