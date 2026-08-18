@@ -164,3 +164,26 @@ def test_violation_runtime_sans_deployment():
     assert lab["severity"] == "warning"
     assert lab["lifecycle"] == "RUNTIME"
     assert lab["namespace"] == "-"
+
+
+# --------------------------------------------------------------- phase D
+def test_lifecycle_retombe_sur_la_policy():
+    """18/08 : le label sortait à '-' en conditions réelles — le notifier
+    generic ne place pas lifecycleStage sur l'alerte. Sans ce repli on perd
+    la distinction build / deploy / runtime dans le tri."""
+    a = A.build_alerts({"alert": {
+        "policy": {"name": "p", "severity": "HIGH_SEVERITY",
+                   "lifecycleStages": ["DEPLOY"]},
+        "deployment": {"name": "d", "namespace": "n"}}})[0]
+    assert a["labels"]["lifecycle"] == "DEPLOY"
+
+
+def test_lifecycle_de_l_alerte_reste_prioritaire():
+    """Le repli ne doit pas écraser la valeur quand StackRox la fournit."""
+    a = A.build_alerts({"alert": {
+        "lifecycleStage": "RUNTIME",
+        "policy": {"name": "p", "severity": "HIGH_SEVERITY",
+                   "lifecycleStages": ["DEPLOY"]},
+        "deployment": {"name": "d", "namespace": "n"}}})[0]
+    assert a["labels"]["lifecycle"] == "RUNTIME"
+
