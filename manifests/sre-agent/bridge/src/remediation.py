@@ -37,6 +37,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import security_rules
+
 API = "https://api.github.com"
 # Secret github-remediation monté en fichiers (clés : token, repo, base).
 GH_DIR = os.environ.get("GITHUB_SECRET_DIR", "/etc/github")
@@ -47,6 +49,10 @@ GH_DIR = os.environ.get("GITHUB_SECRET_DIR", "/etc/github")
 ALLOWED_FILES = (
     re.compile(r"^manifests/app/[a-z0-9-]+/deployment\.yaml$"),
     re.compile(r"^manifests/app/patches/[a-z0-9.-]+\.yaml$"),
+    # E1 (18/08) : la plateforme d'observabilite est un chart Helm, les images
+    # y vivent dans les values. `litmus-values.yaml` reste VOLONTAIREMENT hors
+    # perimetre : il a porte des credentials (dette B7).
+    re.compile(r"^manifests/monitoring/values\.yaml$"),
 )
 ALLOWED_PATHS = (
     re.compile(r"^spec\.template\.spec\.containers\[\d\]\."
@@ -60,6 +66,11 @@ ALLOWED_PATHS = (
     re.compile(r"^spec\.template\.spec\.terminationGracePeriodSeconds$"),
     re.compile(r"^spec\.strategy\.rollingUpdate\.(maxSurge|maxUnavailable)$"),
     re.compile(r"^spec\.progressDeadlineSeconds$"),
+    # E1 (18/08) : la reference d'image. La FORME de la valeur n'est pas
+    # verifiee ici mais dans security_rules.check_image_change() — semver,
+    # majeur interdit, digest jamais perdu, depot jamais change.
+    re.compile(r"^spec\.template\.spec\.containers\[\d\]\.image$"),
+    re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){0,3}\.image\.tag$"),
 )
 # Scalaires k8s simples uniquement : entiers, cpu (500m), mémoire (128Mi).
 VALUE_RE = re.compile(r"^[0-9]+(m|Ki|Mi|Gi)?$")
@@ -120,6 +131,13 @@ def _check_values(path, old, new):
             raise _Reject(
                 f"value-out-of-bounds({new}, baisse max 50% de {old} "
                 f"et >= plancher)")
+    elif field in ("image", "tag"):
+        # E1 : VALUE_RE ne sait lire que des scalaires k8s (128Mi, 500m). Une
+        # reference d'image a ses propres regles, et elles sont ailleurs pour
+        # rester testables sans depot ni cluster.
+        verdict = security_rules.check_image_change(old, new)
+        if not verdict["ok"]:
+            raise _Reject(f"image-{verdict['reason']}: {verdict['detail']}")
     else:
         if not (VALUE_RE.match(old) and VALUE_RE.match(new)):
             raise _Reject("value-not-allowed")
@@ -332,6 +350,12 @@ def _build_patch(parsed, repo, base, token):
         raise _Reject("patch-unparsable")
     if len(changes) > MAX_CHANGES:
         raise _Reject(f"too-many-changes({len(changes)}, max {MAX_CHANGES})")
+    # E1 : le REFUS passe avant l'allow-list, et il est ecrit a part. Si une
+    # entree d'allow-list devenait trop large un jour, celui-ci tiendrait.
+    # L'agent ne modifie pas ses propres garde-fous.
+    denied = security_rules.file_allowed(f)
+    if not denied["ok"] and denied["reason"] == "file-denied":
+        raise _Reject(f"file-denied({f})")
     if not any(r.match(f) for r in ALLOWED_FILES):
         raise _Reject(f"file-not-allowed({f})")
     for p, old, new, reason in changes:

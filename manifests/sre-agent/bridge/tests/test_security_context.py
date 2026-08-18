@@ -198,3 +198,46 @@ def test_violation_sans_cve_reste_traitee(monkeypatch):
     assert out["escalade"] is False
     assert "aucune CVE" in out["resume"]
 
+
+# ------------------------------------------- phase E1 : regles decouvertes
+def test_la_degradation_ne_declasse_pas():
+    """Découvert le 18/08 par le témoin négatif : privé du contexte Central,
+    Log4Shell ne descend pas — elle MONTE, de `haute` à `immediate`. C'est
+    mécanique (le contexte ne sait que déclasser), c'est voulu (ne pas savoir
+    n'est pas savoir que c'est sans risque), et c'est désormais épinglé pour
+    ne pas changer par accident."""
+    v = sc.evaluate("CVE-2021-44228", {"epss": 0.99999}, KEV_RANSOM, {})
+    assert v["priorite"] == "immediate"
+    assert v["escalade"] is True
+
+
+def test_exposition_lue_dans_le_detail(monkeypatch):
+    """§7.6 : /v1/deployments renvoie des vues « liste » sans ports. Le détail
+    vit dans /v1/deployments/{id}. Si ce test casse, `exposed` redevient
+    toujours faux — et le module perd sa seule nuance de déclassement."""
+    if not hasattr(sc, "_any_exposed"):
+        return                       # correctif pas encore applique
+    monkeypatch.setattr(sc, "_get", lambda url, **k: {
+        "ports": [{"exposure": "NODE"}]})
+    assert sc._any_exposed([{"id": "abc"}]) is True
+
+
+def test_exposition_hostport_ne_compte_pas(monkeypatch):
+    """Un hostPort n'est pas une publication hors cluster."""
+    if not hasattr(sc, "_any_exposed"):
+        return
+    monkeypatch.setattr(sc, "_get", lambda url, **k: {
+        "ports": [{"exposure": "HOST"}, {"exposure": "INTERNAL"}]})
+    assert sc._any_exposed([{"id": "abc"}]) is False
+
+
+def test_detail_injoignable_reste_conservateur(monkeypatch):
+    """Pas de preuve d'exposition ⇒ pas d'escalade. Un échec réseau ne doit
+    ni lever, ni inventer une exposition."""
+    if not hasattr(sc, "_any_exposed"):
+        return
+    def boum(*a, **k):
+        raise OSError("central injoignable")
+    monkeypatch.setattr(sc, "_get", boum)
+    assert sc._any_exposed([{"id": "abc"}]) is False
+

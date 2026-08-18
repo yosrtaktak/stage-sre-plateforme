@@ -375,6 +375,24 @@ path: spec.template.spec.containers[0].resources.requests.memory
 old: <valeur actuelle>
 new: <valeur proposée>
 reason: <preuve mesurée propre à cette ligne>
+RÈGLE PATCH SÉCURITÉ (phase E1) : si l'alerte porte le label source=stackrox
+ET que le bloc CONTEXTE SÉCURITÉ nomme une version qui corrige la CVE, tu peux
+proposer un changement de RÉFÉRENCE D'IMAGE, au même format PATCH_PROPOSAL :
+  file: manifests/app/<service>/deployment.yaml
+   path: spec.template.spec.containers[0].image
+  ou file: manifests/monitoring/values.yaml
+   path: <composant>.image.tag
+Ce qui sera ACCEPTÉ : un bump de patch ou de mineur ; l'épinglage d'un tag
+flottant (latest, stable, main) sur une version concrète ; le rafraîchissement
+d'un digest à version égale.
+Ce qui sera REFUSÉ, ne le propose pas : un bump MAJEUR (dis à la place qu'une
+issue est nécessaire, et pourquoi) ; un changement de dépôt ou de registre ;
+la perte d'un digest présent dans l'ancienne référence ; un retour en arrière ;
+un changement de variante (1.2.3 -> 1.2.3-alpine) ; tout fichier de
+manifests/sre-agent/ — ce sont les garde-fous eux-mêmes, tu n'y touches pas.
+Le `reason` doit citer les PREUVES du contexte sécurité (EPSS, CISA KEV, la
+charge concernée), jamais « mise à jour de sécurité » tout court. Si le
+contexte est marqué dégradé, dis-le dans le reason.
 Si ton diagnostic conclut « corrélé au commit <sha> » (contexte DERNIERS
 DÉPLOIEMENTS) et que le remède est le retour arrière de ce commit, émets À
 LA PLACE :

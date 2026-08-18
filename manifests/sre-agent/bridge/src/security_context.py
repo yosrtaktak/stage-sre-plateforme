@@ -217,11 +217,44 @@ def fetch_runtime(image=None, deployment=None, namespace=None):
     return {
         "running": bool(deps),
         "deployments": [d.get("name") for d in deps][:10],
-        # Un déploiement joignable de l'extérieur (LoadBalancer/NodePort) ne se
-        # traite pas comme un composant purement interne.
-        "exposed": any(d.get("exposingService") or
-                       (d.get("exposureLevel") or "").upper()
-                       in ("EXTERNAL", "NODE") for d in deps)}
+        "exposed": _any_exposed(deps)}
+
+
+# Exposition hors du cluster. `HOST` est volontairement exclu : un hostPort
+# n'est pas une publication au meme titre qu'un NodePort ou une Route.
+EXPOSITIONS_EXTERNES = ("EXTERNAL", "NODE", "ROUTE")
+MAX_DETAILS = 5
+
+
+def _any_exposed(deps):
+    """Une des charges est-elle joignable depuis l'exterieur du cluster ?
+
+    Corrige le 18/08 (dette §7.6). /v1/deployments renvoie des objets
+    ListDeployment a huit champs (id, hash, name, cluster, clusterId,
+    namespace, created, priority) : NI PORTS NI EXPOSITION. Le champ lu
+    auparavant n'existait simplement pas, et `exposed` valait toujours False.
+    Le detail vit dans /v1/deployments/{id}.
+
+    Borne a MAX_DETAILS fiches : une requete filtree en renvoie rarement plus,
+    et on ne deroule pas 69 fiches sur un lien lent. Un echec de detail ne leve
+    pas : on reste conservateur (pas de preuve d'exposition => pas d'escalade),
+    conformement a la decision n° 3 du module.
+    """
+    for d in deps[:MAX_DETAILS]:
+        pid = d.get("id")
+        if not pid:
+            continue
+        try:
+            detail = _get(f"{CENTRAL_API}/v1/deployments/{pid}",
+                          headers={"Authorization": f"Bearer {ROX_API_TOKEN}"},
+                          insecure=True)
+        except Exception as e:
+            log(f"detail deploiement indisponible ({pid}) : {e}")
+            continue
+        for port in detail.get("ports") or []:
+            if (port.get("exposure") or "").upper() in EXPOSITIONS_EXTERNES:
+                return True
+    return False
 
 
 # ------------------------------------------------------------------- verdict
