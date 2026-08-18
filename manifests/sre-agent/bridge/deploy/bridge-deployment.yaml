@@ -43,7 +43,7 @@ spec:
       serviceAccountName: holmes-bridge
       containers:
         - name: bridge
-          image: ghcr.io/yosrtaktak/sre-bridge:sha-3140709@sha256:665dcaf8d8508753b90083a6536cd3bbc8742646beab5e8567bae2c313b62f44
+          image: ghcr.io/yosrtaktak/sre-bridge:sha-1e6486c@sha256:424b55f46fd4a1d76be490960d8809c9db776025e99efead7dcd2db839411376
           env:
             - name: HOLMES_URL
               value: "http://holmesgpt-holmes.monitoring.svc.cluster.local:80"
@@ -155,6 +155,12 @@ spec:
               value: "/state/security-context"   # le catalogue KEV (~2 Mo) ne
                                                  # se retelecharge pas a chaque
                                                  # redemarrage du pod.
+            - name: LEDGER_FILE
+              value: "/state/findings-ledger.json"
+            - name: MAX_PRS_OUVERTES
+              value: "5"
+            - name: EXPOSED_NAMESPACES
+              value: "online-boutique"
           ports:
             - containerPort: 8000
           volumeMounts:
