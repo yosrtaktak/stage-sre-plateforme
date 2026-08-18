@@ -55,6 +55,10 @@ PORT = int(os.environ.get("PORT", "8030"))
 # n'a traité, la violation retombera et sera re-notifiée au prochain
 # changement d'état côté StackRox.
 HOLD_HOURS = int(os.environ.get("HOLD_HOURS", "24"))
+# Capture du payload BRUT de StackRox, eteint par defaut. A n allumer que le
+# temps d une capture : un payload porte des noms d images et de namespaces
+# qu on ne veut pas laisser trainer dans les logs en permanence.
+DEBUG_PAYLOAD = os.environ.get("DEBUG_PAYLOAD", "") == "1"
 
 # StackRox -> Prometheus. `info` n'est routé nulle part aujourd'hui : les LOW
 # entrent dans Alertmanager pour l'historique, sans déranger personne.
@@ -111,6 +115,10 @@ def build_alerts(payload):
         image = _s(name.get("fullName"), "-")
 
     categories = policy.get("categories") or []
+    # Le notifier generic ne place pas lifecycleStage sur l alerte (constate
+    # le 18/08 : le label sortait a '-'). La policy, elle, porte la liste des
+    # etages ou elle s applique : on s en sert comme repli.
+    stages = policy.get("lifecycleStages") or []
 
     labels = {
         "alertname": "StackRoxPolicyViolation",
@@ -121,7 +129,8 @@ def build_alerts(payload):
         "namespace": _s(deployment.get("namespace")),
         "cluster": _s(deployment.get("clusterName")),
         "category": _s(categories[0] if categories else None),
-        "lifecycle": _s(alert.get("lifecycleStage")),
+        "lifecycle": _s(alert.get("lifecycleStage")
+                        or (stages[0] if stages else None)),
         # Pour une dédup orientée CVE (une alerte par image plutôt que par
         # déploiement), décommenter la ligne suivante :
         # "image": image,
@@ -187,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             return
+        if DEBUG_PAYLOAD:
+            log(f"payload brut : {json.dumps(payload)[:2000]}")
         try:
             alerts = build_alerts(payload)
             status = _forward(alerts)
@@ -204,3 +215,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     log(f"écoute :{PORT}, cible {ALERTMANAGER_URL}")
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+

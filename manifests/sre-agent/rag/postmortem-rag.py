@@ -406,6 +406,41 @@ def validate_doc(title_sub, by):
             "date": when, "qdrant": pushed}
 
 
+def forget_doc(title):
+    """Retire un document des DEUX backends (Qdrant + cache local).
+
+    Ajouté le 18/08 après le nettoyage manuel d'un post-mortem de TEST : le RAG
+    n'avait aucun chemin d'oubli. Il fallait deux manipulations sur deux
+    backends, et la course avec _save() ramenait le document au redémarrage. Un
+    document faux, un diagnostic erroné ou un test doivent pouvoir sortir de la
+    mémoire de l'agent — sinon ils ressortent dans les recherches de similarité
+    des vrais incidents.
+
+    Le titre doit être EXACT : l'identifiant est un uuid5 du titre. D'où le
+    retour explicite {qdrant, cache} plutôt qu'un succès silencieux quand rien
+    n'a été trouvé.
+    """
+    pid = _doc_id(title)
+    retire_qdrant = False
+    if QDRANT_URL:
+        try:
+            _qdrant("POST",
+                    f"/collections/{COLLECTION}/points/delete?wait=true",
+                    {"points": [pid]})
+            retire_qdrant = True
+        except Exception as e:
+            log(f"forget qdrant KO : {e}")
+    with _lock:
+        avant = len(_cache["docs"])
+        _cache["docs"] = [d for d in _cache["docs"] if d["id"] != pid]
+        _cache["pending"] = [p for p in _cache["pending"] if p != pid]
+        _save()
+        retire_cache = avant != len(_cache["docs"])
+    log(f"oubli : {title} (qdrant={retire_qdrant}, cache={retire_cache})")
+    return {"id": pid, "title": title,
+            "qdrant": retire_qdrant, "cache": retire_cache}
+
+
 def all_payloads():
     """Tous les documents (Qdrant si joignable, sinon cache local)."""
     if QDRANT_URL:
@@ -497,6 +532,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "documents": n, "queued": queued})
             elif self.path == "/search":
                 self._json(search(data["query"], data.get("k", 3)))
+            elif self.path == "/forget":
+                # {title: <titre EXACT>} — voir forget_doc().
+                self._json(forget_doc(data["title"]))
             elif self.path == "/validate":
                 # {title: <sous-chaîne unique du titre>, by: <qui valide>}
                 try:

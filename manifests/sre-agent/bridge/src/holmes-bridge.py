@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from security_context import collect, extract_cves
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Incident Adapter (checklist anti lock-in, point 7) : cycle de vie des
@@ -1304,6 +1305,30 @@ def investigate(alert, postmortem=False):
     labels = alert.get("labels", {})
     ann = alert.get("annotations", {})
     fp = _alert_fp(alert)
+
+    # --- phase D : le contexte securite, calcule AVANT le prompt ------------
+    # Les CVE ne sont pas dans un champ : elles sont citees dans le TEXTE des
+    # messages de violation. Une violation sans CVE (signature, configuration)
+    # passe quand meme ici : le contexte d execution vaut pour elle aussi.
+    # `sec` reste vide pour toute alerte non-StackRox -> le prompt des alertes
+    # de production est inchange au caractere pres.
+    sec = ""
+    if labels.get("source") == "stackrox":
+        ctx = collect(
+            extract_cves(ann.get("description"), ann.get("summary"),
+                         ann.get("remediation")),
+            image=ann.get("image"),
+            deployment=labels.get("deployment"),
+            namespace=labels.get("namespace"))
+        lignes = "\n".join(f"- {v['cve']} — {v['priorite']} — "
+                           f"{v['justification']}" for v in ctx["verdicts"])
+        sec = ("\n\nCONTEXTE SÉCURITÉ (EPSS · CISA KEV · API Central) — "
+               "déjà calculé, NE LE REFAIS PAS :\n"
+               f"{ctx['resume']}\n"
+               f"escalade justifiée : {'OUI' if ctx['escalade'] else 'non'}\n"
+               f"{lignes}\n"
+               "Reprends ces priorités telles quelles et explique-les ; "
+               "ton rôle est de raconter, pas de re-trier.")
     if postmortem:
         prior = _diags.get(fp, {}).get("text")
         prior_diag = (
@@ -1318,7 +1343,7 @@ def investigate(alert, postmortem=False):
             ends_at=alert.get("endsAt", "?"),
             description=ann.get("description", ann.get("summary", "?")),
             prior_diag=prior_diag,
-        )
+        ) + sec
     else:
         ask = PROMPT.format(
             alertname=labels.get("alertname", "?"),
@@ -1326,7 +1351,7 @@ def investigate(alert, postmortem=False):
             slo=labels.get("slo", "?"),
             description=ann.get("description", ann.get("summary", "?")),
             labels=json.dumps(labels, ensure_ascii=False),
-        )
+        ) + sec
     # Amélioration A : contexte plateforme + mémoire des incidents récents
     # injectés en tête de chaque enquête (diagnostic ET post-mortem).
     ask = PLATFORM_CONTEXT + _recent_incidents(exclude_fp=fp) + "\n" + ask
