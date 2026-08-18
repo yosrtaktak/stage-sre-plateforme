@@ -37,7 +37,12 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import findings_ledger
 import security_rules
+
+# E2 : le registre est charge une fois, au demarrage du module. Il vit sur le
+# PVC /state — un registre qui s'oublie au premier restart ne protege de rien.
+findings_ledger.charger()
 
 API = "https://api.github.com"
 # Secret github-remediation monté en fichiers (clés : token, repo, base).
@@ -462,6 +467,20 @@ def maybe_open_pr(analysis, labels):
     except _Reject as r:
         return None, str(r)
 
+    # --- E2 : la porte du registre ---------------------------------------
+    # Placee APRES _build_patch (l'allow-list a deja parle) mais AVANT le
+    # moindre appel d'ecriture GitHub : on ne cree jamais une branche pour la
+    # refermer ensuite.
+    fkey = findings_ledger.finding_key(
+        cve=labels.get("cve"), policy=labels.get("policy"),
+        deployment=labels.get("deployment"), namespace=labels.get("namespace"))
+    pkey = findings_ledger.proposal_key(fkey, title, diff[:200])
+    porte = findings_ledger.autorise(
+        fkey, pkey, statut_pr=pr_status,
+        incident_ouvert=bool(labels.get("incident_ouvert")))
+    if not porte["ok"]:
+        return None, f"ledger-{porte['raison']}: {porte['detail']}"
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", alert).strip("-").lower()[:40]
     branch = f"sre-agent/{kind}-{slug}-{stamp}"
@@ -505,6 +524,10 @@ def maybe_open_pr(analysis, labels):
             {"labels": lbls}, token=token)
     except Exception:
         pass          # les labels sont cosmétiques : jamais bloquants
+    # E2 : la PR existe, le registre la connait. Sans cette ligne, le prochain
+    # cycle de scan rouvrirait exactement la meme.
+    findings_ledger.marquer_proposee(fkey, pkey, pr=pr["number"],
+                                     url=pr["html_url"], resume=title)
     return {"url": pr["html_url"], "number": pr["number"],
             "title": title, "branch": branch}, None
 

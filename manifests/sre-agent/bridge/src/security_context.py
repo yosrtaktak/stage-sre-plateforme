@@ -64,6 +64,13 @@ CENTRAL_API = os.environ.get(
 # Jeton API Central, rôle Analyst (lecture seule). Secret monté par env,
 # JAMAIS dans Git — même règle que holmes-slack-webhook et consorts.
 ROX_API_TOKEN = os.environ.get("ROX_API_TOKEN", "")
+# E2 : namespaces servis par une passerelle L7 (Istio, Ingress). StackRox ne
+# voit que les Services : une charge en ClusterIP derriere un
+# `istio-ingressgateway` en NodePort lui parait interne alors qu'elle est
+# joignable. On declare la liste plutot que de l'inferer — vide par defaut.
+EXPOSED_NAMESPACES = tuple(
+    n.strip() for n in os.environ.get("EXPOSED_NAMESPACES", "").split(",")
+    if n.strip())
 
 CACHE_DIR = os.environ.get("SEC_CACHE_DIR", "/tmp/security-context")
 KEV_TTL_S = int(os.environ.get("KEV_TTL_S", str(24 * 3600)))
@@ -214,10 +221,14 @@ def fetch_runtime(image=None, deployment=None, namespace=None):
                 headers={"Authorization": f"Bearer {ROX_API_TOKEN}"},
                 insecure=True)
     deps = data.get("deployments", [])
+    # E2 : un namespace declare derriere une passerelle est traite comme
+    # expose, meme si aucun Service ne le publie (cf. en-tete du module).
+    derriere_passerelle = bool(namespace and namespace in EXPOSED_NAMESPACES)
     return {
         "running": bool(deps),
         "deployments": [d.get("name") for d in deps][:10],
-        "exposed": _any_exposed(deps)}
+        "exposed": derriere_passerelle or _any_exposed(deps),
+        "via_passerelle": derriere_passerelle}
 
 
 # Exposition hors du cluster. `HOST` est volontairement exclu : un hostPort
