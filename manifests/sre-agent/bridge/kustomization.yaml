@@ -13,4 +13,5 @@ namespace: monitoring
 resources:
   - deploy/bridge-deployment.yaml
   - deploy/slack-gateway.yaml
+  - deploy/stackrox-adapter.yaml
 
