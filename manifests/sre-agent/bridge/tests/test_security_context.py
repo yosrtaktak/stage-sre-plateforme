@@ -241,3 +241,36 @@ def test_detail_injoignable_reste_conservateur(monkeypatch):
     monkeypatch.setattr(sc, "_get", boum)
     assert sc._any_exposed([{"id": "abc"}]) is False
 
+
+
+# ------------------------------------------ phase E2 : passerelle L7 declaree
+def _faux_get(url, **k):
+    if "/v1/deployments?" in url:
+        return {"deployments": [{"id": "a", "name": "frontend"}]}
+    return {"ports": [{"exposure": "INTERNAL"}]}
+
+
+def test_namespace_derriere_passerelle_force_exposed(monkeypatch):
+    """§8.7 : StackRox ne voit que les Services. Une charge ClusterIP derrière
+    un istio-ingressgateway en NodePort lui paraît interne alors qu'elle est
+    joignable — et `exposed: False` servirait alors à DÉCLASSER à tort."""
+    if not hasattr(sc, "EXPOSED_NAMESPACES"):
+        return
+    monkeypatch.setattr(sc, "EXPOSED_NAMESPACES", ("online-boutique",))
+    monkeypatch.setattr(sc, "ROX_API_TOKEN", "faux-jeton")
+    monkeypatch.setattr(sc, "_get", _faux_get)
+    r = sc.fetch_runtime(deployment="frontend", namespace="online-boutique")
+    assert r["exposed"] is True
+    assert r["via_passerelle"] is True
+
+
+def test_namespace_non_declare_reste_interne(monkeypatch):
+    """La liste est vide par défaut : on n'expose rien dans le dos de personne."""
+    if not hasattr(sc, "EXPOSED_NAMESPACES"):
+        return
+    monkeypatch.setattr(sc, "EXPOSED_NAMESPACES", ())
+    monkeypatch.setattr(sc, "ROX_API_TOKEN", "faux-jeton")
+    monkeypatch.setattr(sc, "_get", _faux_get)
+    r = sc.fetch_runtime(deployment="frontend", namespace="online-boutique")
+    assert r["exposed"] is False
+    assert r["via_passerelle"] is False
