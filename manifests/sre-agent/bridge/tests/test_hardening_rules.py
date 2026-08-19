@@ -225,3 +225,29 @@ def test_corps_de_pr_dit_ce_qui_n_a_pas_ete_touche():
     body = H.pr_body("f.yaml", "bridge", a["proposer"], a["issue"],
                      a["deja_present"])
     assert "non touché" in body and "runAsNonRoot" in body
+
+def test_inserer_apres_un_bloc_imbrique():
+      """emailservice, 19/08 : la derniere cle du conteneur est livenessProbe,
+      qui OUVRE un bloc. Inserer juste apres elle separe la sonde de ses
+      enfants — le manifeste produit n'est plus applicable. Le point
+      d'insertion doit etre la derniere LIGNE du conteneur, pas la derniere
+      cle de meme niveau."""
+      sp = " "
+      t = "\n".join([
+          "spec:",
+          sp * 2 + "template:",
+          sp * 4 + "spec:",
+          sp * 6 + "containers:",
+          sp * 8 + "- name: server",
+          sp * 10 + "image: a:1",
+          sp * 10 + "livenessProbe:",
+          sp * 12 + "grpc:",
+          sp * 14 + "port: 8080",
+          sp * 12 + "timeoutSeconds: 5",
+          "",
+      ])
+      r = H.inserer(t, cles=["allowPrivilegeEscalation"])
+      assert r["ok"], r
+      lignes = r["texte"].split("\n")
+      i = [n for n, ln in enumerate(lignes) if ln.strip() == "securityContext:"][0]
+      assert lignes[i - 1].strip() == "timeoutSeconds: 5"
