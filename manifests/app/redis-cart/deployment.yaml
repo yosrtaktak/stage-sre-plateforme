@@ -27,6 +27,8 @@ spec:
           volumeMounts:
             - mountPath: /data
               name: redis-data
+          securityContext:
+            allowPrivilegeEscalation: false
       volumes:
         - name: redis-data
           emptyDir: {}
