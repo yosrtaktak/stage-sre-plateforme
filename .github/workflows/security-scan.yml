@@ -101,4 +101,46 @@ jobs:
           persist-credentials: false
       # zizmor sort en erreur dès qu'il trouve quelque chose — le « »
       # le met en observation. GATE : le retirer en même temps que les autres.
-      - run: pipx run zizmor .github/workflows/
+      - run: pipx run zizmor .github/workflow
+  radar-high:                  # ── MESURE, jamais un gate : la descente du backlog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: manifests/
+          severity: HIGH
+          exit-code: "0"        # JAMAIS "1" — un mur sur les HIGH bloquerait tout
+          format: json
+          output: radar-high.json
+
+      - name: Radar HIGH — compter et publier
+        run: |
+          set -euo pipefail
+          S="$GITHUB_STEP_SUMMARY"
+          TOTAL=$(jq '[.Results[]?|(.Misconfigurations//[])|length]|add//0' radar-high.json)
+          EXC=0
+          for f in .trivyignore .trivyignore.yaml; do
+            [ -f "$f" ] && EXC=$((EXC + $(grep -cE '^ *(AVD-|CVE-|- id:)' "$f" || true)))
+          done
+          echo "## 🎯 Radar HIGH — backlog de durcissement" >> "$S"
+          echo "" >> "$S"
+          echo "**$TOTAL** findings HIGH · **$EXC** exception(s) déclarée(s)" >> "$S"
+          echo "" >> "$S"
+          echo '### Par règle' >> "$S"
+          echo '```' >> "$S"
+          jq -r '[.Results[]?|(.Misconfigurations//[])[]|.ID]|group_by(.)|map("\(length) \(.[0])")[]' radar-high.json | sort -rn | head -15 >> "$S"
+          echo '```' >> "$S"
+          echo "RADAR_HIGH=$TOTAL EXCEPTIONS=$EXC" | tee radar-high.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: radar-high-${{ github.sha }}
+          path: |
+            radar-high.json
+            radar-high.txt
+          retention-days: 90
+
