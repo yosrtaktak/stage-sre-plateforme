@@ -41,6 +41,8 @@ spec:
       # B0 : SA avec lecture seule des Applications Argo CD (namespace
       # argocd) — cf. argocd-reader-rbac.yaml, à appliquer AVANT.
       serviceAccountName: holmes-bridge
+      securityContext:
+        fsGroup: 10001
       containers:
         - name: bridge
           image: ghcr.io/yosrtaktak/sre-bridge:sha-312b264@sha256:69933c68586bd7688490fa5a3b5c589819d82df0343d7b83817fc1de13e2f998
