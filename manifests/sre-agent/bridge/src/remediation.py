@@ -38,6 +38,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 import findings_ledger
+import hardening_rules
 import security_rules
 
 # E2 : le registre est charge une fois, au demarrage du module. Il vit sur le
@@ -159,6 +160,14 @@ CHANGE_RE = re.compile(
     r"\s*old:\s*(?P<old>\S+)\s*\n"
     r"\s*new:\s*(?P<new>\S+)\s*\n"
     r"\s*reason:\s*(?P<reason>[^\n]+)")
+# E3 : le durcissement additif. Pas de old/new — on nomme les cles a AJOUTER,
+# et hardening_rules refuse tout ce qui n'est pas strictement additif.
+HARDEN_RE = re.compile(
+    r"HARDEN_PROPOSAL:\s*\n"
+    r"\s*file:\s*(?P<file>\S+)\s*\n"
+    r"\s*container:\s*(?P<container>\d+)\s*\n"
+    r"\s*keys:\s*(?P<keys>[A-Za-z0-9,\s]+)")
+
 ROLLBACK_RE = re.compile(
     r"ROLLBACK_PROPOSAL:\s*\n"
     r"\s*commit:\s*(?P<commit>[0-9a-f]{7,40})\s*\n"
@@ -399,6 +408,56 @@ def _build_patch(parsed, repo, base, token):
     return files, title, diff, reason, "fix"
 
 
+def _build_hardening(m, repo, base, token):
+    """HARDEN_PROPOSAL -> le meme quintuplet que _build_patch.
+
+    L'allow-list des FICHIERS est celle des patchs : durcir un manifeste hors
+    perimetre serait aussi grave que d'y changer une valeur.
+    """
+    f = m.group("file")
+    index = int(m.group("container"))
+    cles = [c.strip() for c in m.group("keys").split(",") if c.strip()]
+    if not cles:
+        raise _Reject("harden-no-keys")
+
+    denied = security_rules.file_allowed(f)
+    if not denied["ok"] and denied["reason"] == "file-denied":
+        raise _Reject(f"file-denied({f})")
+    if not any(r.match(f) for r in ALLOWED_FILES):
+        raise _Reject(f"file-not-allowed({f})")
+
+    cur = _gh("GET", f"/repos/{repo}/contents/"
+              f"{urllib.parse.quote(f, safe='/')}?ref={base}", token=token)
+    text = base64.b64decode(cur["content"]).decode()
+
+    # On ne fait PAS confiance aux cles proposees par le LLM : on redemande a
+    # hardening_rules ce qui est licite, et on garde l'intersection.
+    vue = hardening_rules.analyser(text, index)
+    if not vue["ok"]:
+        raise _Reject(f"harden-{vue['raison']}")
+    licites = [c for c in cles if c in vue["proposer"]]
+    refusees = [c for c in cles if c not in vue["proposer"]]
+    if not licites:
+        raise _Reject(f"harden-rien-de-licite(demande={cles}, "
+                      f"proposable={vue['proposer']})")
+
+    res = hardening_rules.inserer(text, index, licites)
+    if not res["ok"]:
+        raise _Reject(f"harden-{res['raison']}")
+
+    files = {f: (res["texte"], cur["sha"])}
+    svc = f.split("/")[-2] if "/" in f else f
+    title = (f"[sre-agent] {svc} : durcissement "
+             f"({', '.join(licites)})")
+    diff = hardening_rules.pr_body(f, svc, licites, vue["issue"],
+                                   vue["deja_present"])
+    reason = (f"{len(licites)} cle(s) de securityContext ajoutee(s), "
+              f"strictement additives — aucune valeur existante modifiee."
+              + (f" Ecartees comme non licites : {refusees}."
+                 if refusees else ""))
+    return files, title, diff, reason, "harden"
+
+
 def _build_rollback(m, repo, base, token):
     sha = m.group("commit")
     c = _gh("GET", f"/repos/{repo}/commits/{sha}", token=token)
@@ -452,7 +511,8 @@ def maybe_open_pr(analysis, labels):
         return None, "disabled"
     patch = parse_patch(analysis)
     rb = ROLLBACK_RE.search(analysis)
-    if not patch and not rb:
+    hd = HARDEN_RE.search(analysis)
+    if not patch and not rb and not hd:
         return None, "no-proposal"
     token, repo, base = _cfg("token"), _cfg("repo"), _cfg("base")
     alert = labels.get("alertname", "alert")
@@ -461,6 +521,9 @@ def maybe_open_pr(analysis, labels):
         if patch:
             files, title, diff, reason, kind = _build_patch(
                 patch, repo, base, token)
+        elif hd:
+            files, title, diff, reason, kind = _build_hardening(
+                hd, repo, base, token)
         else:
             files, title, diff, reason, kind = _build_rollback(
                 rb, repo, base, token)
