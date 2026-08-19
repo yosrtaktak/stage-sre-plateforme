@@ -146,3 +146,16 @@ jobs:
             radar-high.txt
           retention-days: 90
 
+       - name: Radar HIGH — ventilation par répertoire
+          run: |
+            set -euo pipefail
+            S="$GITHUB_STEP_SUMMARY"
+            jq -r '.Results[]?|select(((.Misconfigurations//[])|length)>0)|"\(.Misconfigurations|length) \(.Target)"' radar-high.json > radar-files.txt
+            ADDR=$(awk '{t=$2;sub(/^manifests\//,"",t);if(t~/^app\//)s+=$1} END{print s+0}' radar-files.txt)
+            MINE=$(awk '{t=$2;sub(/^manifests\//,"",t);if(t~/^sre-agent\//)s+=$1} END{print s+0}' radar-files.txt)
+            echo '### Par répertoire' >> "$S"
+            echo '```' >> "$S"
+            awk '{t=$2;sub(/^manifests\//,"",t);split(t,p,"/");s[p[1]]+=$1} END{for(k in s) print s[k], k}' radar-files.txt | sort -rn >> "$S"
+            echo '```' >> "$S"
+            echo "**Adressable par l'agent (app/) : $ADDR** · refusé par construction (sre-agent/) : $MINE" >> "$S"
+            echo "RADAR_ADDRESSABLE=$ADDR RADAR_SRE_AGENT=$MINE" | tee -a radar-high.txt
