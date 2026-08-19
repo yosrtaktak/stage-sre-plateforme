@@ -261,7 +261,7 @@ def inserer(texte, index=0, cles=None):
         # de même niveau — jamais au milieu d'une sous-liste.
         point = fin
         for i in range(fin - 1, debut, -1):
-            if lignes[i].strip() and _indent(lignes[i]) == indent_cle:
+            if lignes[i].strip() and _indent(lignes[i]) >= indent_cle:
                 point = i + 1
                 break
         nouvelles = [f"{' ' * indent_cle}securityContext:"] + nouvelles
