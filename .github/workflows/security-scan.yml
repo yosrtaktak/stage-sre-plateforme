@@ -146,8 +146,8 @@ jobs:
             radar-high.txt
           retention-days: 90
 
-       - name: Radar HIGH — ventilation par répertoire
-          run: |
+      - name: Radar HIGH — ventilation par répertoire
+        run: |
             set -euo pipefail
             S="$GITHUB_STEP_SUMMARY"
             jq -r '.Results[]?|select(((.Misconfigurations//[])|length)>0)|"\(.Misconfigurations|length) \(.Target)"' radar-high.json > radar-files.txt
