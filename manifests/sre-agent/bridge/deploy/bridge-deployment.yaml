@@ -43,7 +43,7 @@ spec:
       serviceAccountName: holmes-bridge
       containers:
         - name: bridge
-          image: ghcr.io/yosrtaktak/sre-bridge:sha-e9f93b7@sha256:b82b530d96e08264600e8e6f42e8068e5eab3fdf5b4fbbbca45ef82e986a2096
+          image: ghcr.io/yosrtaktak/sre-bridge:sha-2fcbc5e@sha256:9d429251030d5ef26fa68b1b325a41aec1a59a4db1f844291c5687539e6db41e
           env:
             - name: HOLMES_URL
               value: "http://holmesgpt-holmes.monitoring.svc.cluster.local:80"
