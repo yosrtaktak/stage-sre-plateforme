@@ -166,7 +166,7 @@ HARDEN_RE = re.compile(
     r"HARDEN_PROPOSAL:\s*\n"
     r"\s*file:\s*(?P<file>\S+)\s*\n"
     r"\s*container:\s*(?P<container>\d+)\s*\n"
-    r"\s*keys:\s*(?P<keys>[A-Za-z0-9,\s]+)")
+    r"\s*keys:\s*(?P<keys>[A-Za-z0-9, \t]+)")
 
 ROLLBACK_RE = re.compile(
     r"ROLLBACK_PROPOSAL:\s*\n"

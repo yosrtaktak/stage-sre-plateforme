@@ -115,3 +115,12 @@ def test_parse_patch_single():
 
 def test_parse_patch_absent():
     assert R.parse_patch("aucune proposition dans ce verdict") is None
+
+
+def test_harden_les_cles_s_arretent_en_fin_de_ligne():
+    """1er run reel (19/08) : la prose du LLM suit le bloc ; la capture des cles doit s arreter au saut de ligne."""
+    analyse = ("Verdict : violation.\n\n" "HARDEN_PROPOSAL:\n" "file: manifests/app/loadgenerator/deployment.yaml\n" "container: 0\n" "keys: allowPrivilegeEscalation\n" "\n" "Confiance : haute - alerte confirmee.\n")
+    m = R.HARDEN_RE.search(analyse)
+    assert m is not None
+    cles = [c.strip() for c in m.group("keys").split(",") if c.strip()]
+    assert cles == ["allowPrivilegeEscalation"]
