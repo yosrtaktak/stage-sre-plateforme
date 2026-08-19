@@ -101,7 +101,7 @@ jobs:
           persist-credentials: false
       # zizmor sort en erreur dès qu'il trouve quelque chose — le « »
       # le met en observation. GATE : le retirer en même temps que les autres.
-      - run: pipx run zizmor .github/workflow
+      - run: pipx run zizmor .github/workflows/
   radar-high:                  # ── MESURE, jamais un gate : la descente du backlog
     runs-on: ubuntu-latest
     timeout-minutes: 10
