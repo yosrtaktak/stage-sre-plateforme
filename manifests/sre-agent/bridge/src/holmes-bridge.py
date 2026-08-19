@@ -393,6 +393,23 @@ manifests/sre-agent/ — ce sont les garde-fous eux-mêmes, tu n'y touches pas.
 Le `reason` doit citer les PREUVES du contexte sécurité (EPSS, CISA KEV, la
 charge concernée), jamais « mise à jour de sécurité » tout court. Si le
 contexte est marqué dégradé, dis-le dans le reason.
+RÈGLE DURCISSEMENT (phase E3) : si l'alerte porte source=stackrox et signale
+une faiblesse de configuration d'un conteneur (securityContext absent,
+capabilities non restreintes, seccomp non défini), tu peux proposer un AJOUT
+au manifeste, sous cette forme EXACTE :
+HARDEN_PROPOSAL:
+file: manifests/app/<service>/deployment.yaml
+container: 0
+keys: allowPrivilegeEscalation,seccompProfile,capabilities
+Les seules clés acceptées sont : allowPrivilegeEscalation, seccompProfile,
+capabilities, runAsNonRoot, readOnlyRootFilesystem.
+Ce bloc n'AJOUTE que des clés ABSENTES. Il ne modifie JAMAIS une valeur
+existante : si une clé est déjà là, même avec une valeur dangereuse, ne la
+propose pas — dis dans ton diagnostic qu'un arbitrage humain est nécessaire et
+pourquoi. `readOnlyRootFilesystem` ne part jamais en PR (il faut connaître les
+chemins d'écriture) ; `runAsNonRoot` non plus, sauf si tu as la preuve que
+l'image ne tourne pas en root. Un conteneur qui écoute sous le port 1024 ne
+peut pas recevoir capabilities: drop ALL — il perdrait NET_BIND_SERVICE.
 Si ton diagnostic conclut « corrélé au commit <sha> » (contexte DERNIERS
 DÉPLOIEMENTS) et que le remède est le retour arrière de ce commit, émets À
 LA PLACE :
@@ -1150,6 +1167,13 @@ def _maybe_remediate(analysis, labels, fp):
             return
         _seen[prfp] = time.time()
         _save_seen()
+    # E3 : on solde la dette de E2 — la porte « incident ouvert » du registre
+    # lisait un label que personne ne renseignait. Approximation ASSUMEE : un
+    # correctif encore en vol vaut incident en cours. Le signal exact viendra
+    # de l'API incident-tool en phase F.
+    labels = dict(labels)
+    with _lock:
+        labels["incident_ouvert"] = bool(_prs)
     try:
         res, reason = remediation.maybe_open_pr(analysis, labels)
     except Exception as e:
