@@ -159,3 +159,46 @@ jobs:
             echo '```' >> "$S"
             echo "**Adressable par l'agent (app/) : $ADDR** · refusé par construction (sre-agent/) : $MINE" >> "$S"
             echo "RADAR_ADDRESSABLE=$ADDR RADAR_SRE_AGENT=$MINE" | tee -a radar-high.txt
+      - name: Écarter l'ignore file avant le scan brut
+        run: |
+            set -euo pipefail
+            if [ -f .trivyignore.yaml ]; then
+              cp .trivyignore.yaml /tmp/exc.yaml
+              rm .trivyignore.yaml
+              echo "ignore file ecarte du scan"
+            else
+              : > /tmp/exc.yaml
+              echo "aucun ignore file"
+            fi
+
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: manifests/
+          severity: CRITICAL
+          exit-code: "0"
+          format: json
+          output: radar-critical.json
+
+      - name: Exceptions déclarées — vivantes ou mortes
+        run: |
+          set -euo pipefail
+          S="$GITHUB_STEP_SUMMARY"
+          jq -r '.Results[]?|.Target as $t|((.Misconfigurations//[])[]|"\(.ID)\t\($t)")' radar-critical.json | sort -u > crit.txt
+          awk '/- id:/{id=$NF;next} /^ *- "/{gsub(/"/,"");sub(/^ *- */,"");print id"\t"$0}' /tmp/exc.yaml | sort -u > exc.txt
+          TOT=$(wc -l < crit.txt)
+          VIV=$(comm -12 exc.txt crit.txt | wc -l)
+          MORT=$(comm -23 exc.txt crit.txt | wc -l)
+          echo '### 🧾 Exceptions CRITICAL déclarées' >> "$S"
+          echo "" >> "$S"
+          echo "**$TOT** findings CRITICAL bruts · **$VIV** exception(s) vivante(s) · **$MORT** morte(s)" >> "$S"
+          echo "" >> "$S"
+          echo '#### Mortes — à retirer de `.trivyignore.yaml`' >> "$S"
+          echo '```' >> "$S"
+          comm -23 exc.txt crit.txt >> "$S"
+          echo '```' >> "$S"
+          echo '#### Vivantes — décisions toujours valables' >> "$S"
+          echo '```' >> "$S"
+          comm -12 exc.txt crit.txt >> "$S"
+          echo '```' >> "$S"
+          echo "RADAR_CRITICAL=$TOT EXC_VIVANTES=$VIV EXC_MORTES=$MORT" | tee -a radar-high.txt
