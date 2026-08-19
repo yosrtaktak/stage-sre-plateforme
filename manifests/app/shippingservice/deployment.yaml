@@ -41,6 +41,8 @@ spec:
           livenessProbe:
             grpc:
               port: 50051
+          securityContext:
+            allowPrivilegeEscalation: false
 ---
 apiVersion: v1
 kind: Service
