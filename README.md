@@ -219,6 +219,14 @@ Bump majeur · downgrade · changement de dépôt ou de registre · perte d'un d
 Chacun de ces refus part en **issue**, avec la raison écrite par la règle qui a
 refusé. Le travail d'analyse n'est jamais perdu.
 
+![Pull request de durcissement ouverte par l'agent](docs/plateforme/captures/agent-pr-durcissement.png)
+*Une pull request de durcissement réelle, sur `adservice`. Trois clés ajoutées,
+chacune avec la raison écrite par la règle qui l'autorise. Et surtout la section
+que l'agent produit pour ce qu'il **ne fait pas** : `runAsNonRoot` faute de
+preuve que l'image ne tourne pas en root, `readOnlyRootFilesystem` parce
+qu'aucune lecture statique ne dit où un programme écrit. Ces deux clés partent
+dans une issue liée, avec la même justification — le travail d'analyse n'est
+jamais jeté.*
 ### Ce qui le rend supportable
 
 Un agent qui propose sans mesure devient un agent qu'on ignore. Trois mécanismes
