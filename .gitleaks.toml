@@ -15,7 +15,7 @@ useDefault = true
 
 # --- À décommenter APRÈS le premier run et la révocation (étape 6 du guide) ---
 [allowlist]
-# description = "Secrets historiques révoqués — traçés au post-mortem sécurité du 11/08/2026"
+description = "Secrets historiques révoqués — traçés au post-mortem sécurité du 11/08/2026"
 # # PAT fine-grained commité le 31/07 (commit 53e3ccfc, manifests/argoCD/repo-stage-sre.yaml),
 # # retiré du suivi le 01/08 (0ad33327), RÉVOQUÉ le 11/08/2026. Chaîne inerte.
 commits = ["53e3ccfc567e03d596a85717136e8550baadfbc0","dd504412d84eb8eb8090ede9a7738b1a7b858876","a8051c815205bd2efa75d9edf8d882d7c34bc36e"]
@@ -25,3 +25,7 @@ commits = ["53e3ccfc567e03d596a85717136e8550baadfbc0","dd504412d84eb8eb8090ede9a
 # mongo rootPassword ROTE le 17/08 (ancienne valeur refusee par la base, verifie), replicaSetKey sortie
 # vers existingSecret, ACCESS_KEY REVOQUEE (enregistrement infra supprime du control plane).
 # Le commit a8051c8 reste allowliste : lhistorique porte encore les chaines, mais elles sont inertes.
+
+  #  Bloc allowlist actif depuis le 13/08/2026 (liste commits),description explicitee le 20/08/2026. Les 3 commits listes portent
+  #  des secrets historiques tous révoqués et vérifiés (post-mortem §2.3). Toute
+  #  nouvelle entrée doit être datée, justifiée, et pointer un secret RÉVOQUÉ.

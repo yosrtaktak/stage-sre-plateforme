@@ -130,7 +130,7 @@ jobs:
           done
           echo "## 🎯 Radar HIGH — backlog de durcissement" >> "$S"
           echo "" >> "$S"
-          echo "**$TOTAL** findings HIGH · **$EXC** exception(s) déclarée(s)" >> "$S"
+          echo "**$TOTAL** findings HIGH · **$EXC** entrée(s) déclarée(s)" >> "$S"
           echo "" >> "$S"
           echo '### Par règle' >> "$S"
           echo '```' >> "$S"
@@ -191,7 +191,7 @@ jobs:
           MORT=$(comm -23 exc.txt crit.txt | wc -l)
           echo '### 🧾 Exceptions CRITICAL déclarées' >> "$S"
           echo "" >> "$S"
-          echo "**$TOT** findings CRITICAL bruts · **$VIV** exception(s) vivante(s) · **$MORT** morte(s)" >> "$S"
+          echo "**$TOT** findings CRITICAL bruts · **$VIV** couple(s) règle×chemin vivant(s) · **$MORT** morte(s)" >> "$S"
           echo "" >> "$S"
           echo '#### Mortes — à retirer de `.trivyignore.yaml`' >> "$S"
           echo '```' >> "$S"
