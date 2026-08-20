@@ -76,7 +76,7 @@ googleapis-common-protos[grpc]==1.70.0
     #   grpcio-status
 greenlet==3.3.0
     # via sqlalchemy
-grpc-google-iam-v1==0.14.2
+grpc-google-iam-v1==0.14.5
     # via
     #   google-cloud-alloydb
     #   google-cloud-secret-manager
