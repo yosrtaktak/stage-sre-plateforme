@@ -62,14 +62,14 @@ jour par Renovate.
 
 ```mermaid
 flowchart LR
-    A["🔍 DÉTECTER<br/><small>StackRox · Prometheus</small>"]
-    B["⚖️ TRIER<br/><small>EPSS · CISA KEV<br/>la charge tourne-t-elle ?</small>"]
-    C["💡 PROPOSER<br/><small>LLM + allow-list</small>"]
-    D["🧠 SE SOUVENIR<br/><small>registre des propositions</small>"]
-    E["📬 TRANSMETTRE<br/><small>pull request ou issue</small>"]
-    F["★ MERGE HUMAIN ★<br/><small>6 gates CI · CODEOWNERS</small>"]
-    G["🚀 DÉPLOYER<br/><small>Argo CD</small>"]
-    H["✅ CONFIRMER<br/><small>rescan : la violation<br/>a-t-elle disparu ?</small>"]
+    A["🔍 DÉTECTER<br/>StackRox · Prometheus"]
+    B["⚖️ TRIER<br/>EPSS · CISA KEV<br/>la charge tourne-t-elle ?"]
+    C["💡 PROPOSER<br/>LLM + allow-list"]
+    D["🧠 SE SOUVENIR<br/>registre des propositions"]
+    E["📬 TRANSMETTRE<br/>pull request ou issue"]
+    F["★ MERGE HUMAIN ★<br/>6 gates CI · CODEOWNERS"]
+    G["🚀 DÉPLOYER<br/>Argo CD"]
+    H["✅ CONFIRMER<br/>rescan : la violation<br/>a-t-elle disparu ?"]
 
     A --> B --> C --> D --> E --> F --> G --> H
     H -. corrigé ou non .-> D
@@ -105,7 +105,7 @@ flowchart TB
     subgraph AG ["🤖 AGENT SRE"]
         CTX["contexte sécurité<br/>EPSS · CISA KEV · charge"]
         LLM["HolmesGPT<br/>Gemini · repli Groq"]
-        ALLOW["allow-list en dur<br/><b>le code décide</b>"]
+        ALLOW["allow-list en dur<br/>le code décide"]
         LEDG["registre + RAG"]
     end
 
