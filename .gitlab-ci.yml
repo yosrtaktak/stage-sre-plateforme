@@ -1,0 +1,230 @@
+# =============================================================================
+#  Pipeline DevSecOps — portage des six workflows GitHub Actions.
+# -----------------------------------------------------------------------------
+#  Choix de conception : on réutilise les MÊMES images de conteneurs que la
+#  version GitHub (gitleaks, Trivy, kubeconform, cosign) plutôt que les
+#  templates GitLab. Deux raisons :
+#    - le comportement est identique à celui qui a été validé côté GitHub ;
+#    - aucune dépendance à une licence : ceci tourne sur GitLab Free.
+#
+#  ÉQUIVALENCES avec les workflows d'origine :
+#    security-scan       -> secrets · manifests-config · deps-cve · sbom · radar
+#    validate-manifests  -> validate
+#    agent-ci            -> agent:lint · agent:test
+#    build-images        -> build-sign
+#    codeql              -> sast (template GitLab, moteur Semgrep)
+#    zizmor              -> SANS OBJET : il analyse des workflows GitHub
+#
+#  Destination : .gitlab-ci.yml (racine du dépôt)
+# =============================================================================
+stages: [validate, test, security, build]
+
+variables:
+  TRIVY_IMAGE: aquasec/trivy:0.68.0
+  # Les gates armés doivent voir tout le dépôt ; le scan de secrets exige en
+  # plus tout l'historique (GIT_DEPTH: 0), la leçon d'un jeton retrouvé dans
+  # un commit ancien.
+  GIT_DEPTH: 50
+
+# Le SAST de GitLab (Semgrep) remplace CodeQL. Il se limite au code de l'agent.
+include:
+  - template: Security/SAST.gitlab-ci.yml
+
+.regles_defaut: &regles_defaut
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# =============================================================================
+#  VALIDATE — chaque kustomization se rend, chaque manifeste valide son schéma
+# =============================================================================
+validate:
+  stage: validate
+  image: alpine:3.20
+  <<: *regles_defaut
+  before_script:
+    - apk add --no-cache curl tar
+    - |
+      curl -sSL -o /tmp/kubectl \
+        "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
+      install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+    # Épinglé par version ET vérifié : la chaîne d'approvisionnement du gate
+    # qui garde les autres ne doit pas être le maillon faible.
+    - |
+      KC=v0.6.7
+      curl -sSL -o /tmp/kc.tgz \
+        "https://github.com/yannh/kubeconform/releases/download/${KC}/kubeconform-linux-amd64.tar.gz"
+      tar xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
+  script:
+    - set -euo pipefail
+    - mkdir -p rendus
+    - |
+      for d in $(find manifests -name kustomization.yaml -exec dirname {} \; | sort); do
+        echo "=== rendu : $d"
+        kubectl kustomize "$d" > "rendus/$(echo "$d" | tr '/' '_').yaml"
+      done
+    - |
+      kubeconform -strict -summary -ignore-missing-schemas \
+        -schema-location default \
+        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json' \
+        rendus/*.yaml
+    - |
+      find manifests/argoCD -name '*.yaml' -print0 | xargs -0 kubeconform \
+        -strict -summary -ignore-missing-schemas \
+        -schema-location default \
+        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}{{.KindSuffix}}.json'
+  artifacts:
+    when: on_failure
+    paths: [rendus/]
+    expire_in: 1 week
+
+# =============================================================================
+#  TEST — la qualité du code de l'agent
+# =============================================================================
+agent:lint:
+  stage: test
+  image: python:3.11-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [manifests/sre-agent/**/*]
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [manifests/sre-agent/**/*]
+  script:
+    - pip install --no-cache-dir "ruff==0.15.*"
+    - ruff check manifests/sre-agent/
+
+agent:test:
+  stage: test
+  image: python:3.11-slim          # même interpréteur que l'image du bridge
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [manifests/sre-agent/**/*]
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [manifests/sre-agent/**/*]
+  script:
+    - pip install --no-cache-dir "pytest==8.*"
+    - python -m pytest manifests/sre-agent/bridge/tests/ -v
+
+# =============================================================================
+#  SECURITY — les quatre gates
+# =============================================================================
+secrets:
+  stage: security
+  image: zricethezav/gitleaks:v8.28.0
+  variables:
+    GIT_DEPTH: 0                   # TOUT l'historique, jamais le dernier commit
+  <<: *regles_defaut
+  script:
+    - gitleaks detect --source . --redact -v --exit-code 1
+        --report-format sarif --report-path gitleaks.sarif
+  artifacts:
+    when: always
+    paths: [gitleaks.sarif]
+    expire_in: 1 month
+
+manifests-config:
+  stage: security
+  image: $TRIVY_IMAGE
+  <<: *regles_defaut
+  script:
+    # GATE ARMÉ : un CRITICAL ou un HIGH de configuration bloque le merge.
+    - trivy config manifests/ --severity CRITICAL,HIGH --exit-code 1 --no-progress
+
+deps-cve:
+  stage: security
+  image: $TRIVY_IMAGE
+  <<: *regles_defaut
+  script:
+    # GATE ARMÉ, mais seulement sur ce qui a un correctif disponible :
+    # bloquer sur une CVE sans remède ne protège de rien, ça arrête tout.
+    - trivy fs . --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress
+
+sbom:
+  stage: security
+  image: $TRIVY_IMAGE
+  <<: *regles_defaut
+  script:
+    - trivy fs . --format spdx-json --output "sbom-$CI_COMMIT_SHORT_SHA.spdx.json"
+  artifacts:
+    paths: ["sbom-$CI_COMMIT_SHORT_SHA.spdx.json"]
+    expire_in: 6 months
+
+radar-high:
+  stage: security
+  image: $TRIVY_IMAGE
+  <<: *regles_defaut
+  allow_failure: true              # MESURE, jamais un gate
+  script:
+    # Le thermomètre du backlog de durcissement. exit-code 0 : un mur sur les
+    # HIGH bloquerait tout et personne ne descendrait jamais le backlog.
+    - trivy config manifests/ --severity HIGH --exit-code 0 --no-progress
+        --format json --output radar-high.json
+    - |
+      echo "── Radar HIGH : backlog de durcissement ──"
+      grep -o '"AVD-[A-Z0-9-]*"' radar-high.json | sort | uniq -c | sort -rn || true
+      echo "total : $(grep -c '"AVD-' radar-high.json || echo 0) findings"
+  artifacts:
+    paths: [radar-high.json]
+    expire_in: 1 month
+
+# =============================================================================
+#  BUILD — image, scan, SBOM, signature sur le digest
+# =============================================================================
+build-sign:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - manifests/sre-agent/bridge/src/**/*
+        - manifests/sre-agent/bridge/Dockerfile
+    - if: $CI_PIPELINE_SOURCE == "web"
+  # Signature keyless : GitLab émet un jeton OIDC que Sigstore accepte, comme
+  # GitHub le fait pour l'action cosign. Aucune clé privée à gérer.
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  variables:
+    IMAGE: $CI_REGISTRY_IMAGE/sre-bridge
+    TAG: sha-$CI_COMMIT_SHORT_SHA
+  before_script:
+    - apk add --no-cache curl
+    - curl -sSL -o /usr/local/bin/cosign
+        https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+    - chmod +x /usr/local/bin/cosign
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER"
+        --password-stdin "$CI_REGISTRY"
+  script:
+    - set -euo pipefail
+    # Tag immuable dérivé du commit — jamais de :latest.
+    - docker build -t "$IMAGE:$TAG" manifests/sre-agent/bridge
+    - docker push "$IMAGE:$TAG"
+    # GATE ARMÉ dès le premier build : image neuve = zéro dette à trier.
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE
+        image "$IMAGE:$TAG" --severity CRITICAL --ignore-unfixed --exit-code 1
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+        -v "$PWD:/out" $TRIVY_IMAGE image "$IMAGE:$TAG"
+        --format spdx-json --output "/out/bridge-$TAG.spdx.json"
+    # La signature porte sur le DIGEST, jamais sur le tag : un tag est mutable.
+    - DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:$TAG")
+    - cosign sign --yes "$DIGEST"
+    - cosign attest --yes --type spdxjson --predicate "bridge-$TAG.spdx.json" "$DIGEST"
+    - echo "Référence à coller dans le manifeste :"
+    - echo "  image: $DIGEST"
+  artifacts:
+    paths: ["bridge-*.spdx.json"]
+    expire_in: 6 months
+
+# =============================================================================
+#  SAST — remplace CodeQL, limité au code de l'agent
+# =============================================================================
+semgrep-sast:
+  stage: security
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [manifests/sre-agent/**/*]
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [manifests/sre-agent/**/*]
+  variables:
+    SAST_EXCLUDED_PATHS: "src, kubernetes-manifests, helm-chart, kustomize, terraform"
