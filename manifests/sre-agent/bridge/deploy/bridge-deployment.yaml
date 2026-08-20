@@ -45,7 +45,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: bridge
-          image: ghcr.io/yosrtaktak/sre-bridge:sha-312b264@sha256:69933c68586bd7688490fa5a3b5c589819d82df0343d7b83817fc1de13e2f998
+          image: ghcr.io/yosrtaktak/sre-bridge:sha-bba19f1@sha256:7a16772dd60ab1468060c2cfa3c7e3932ccf002c3c0de8c0be7e0575623e4a62
           env:
             - name: HOLMES_URL
               value: "http://holmesgpt-holmes.monitoring.svc.cluster.local:80"
@@ -192,6 +192,10 @@ spec:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
       volumes:
         - name: slack
           secret:
