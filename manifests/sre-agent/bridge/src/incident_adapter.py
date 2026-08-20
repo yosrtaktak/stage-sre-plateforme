@@ -26,7 +26,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # URL de l'API incident (PostgREST). Vide = adapter désactivé (no-op).
 INCIDENT_API = os.environ.get("INCIDENT_API_URL", "").strip().rstrip("/")
@@ -49,6 +49,19 @@ ALERTMANAGER_URL = os.environ.get(
     "ALERTMANAGER_URL",
     "http://obs-alertmanager.monitoring.svc.cluster.local:9093"
 ).strip().rstrip("/")
+
+# F (L4) : ce qui ouvre une ligne `incidents` sans etre un incident de
+# production. Les violations StackRox arrivent en alerte firing comme le
+# reste : sans ce filtre, la premiere d'entre elles bloquerait a vie les PRs
+# de securite, y compris la sienne.
+INCIDENTS_NON_BLOQUANTS = tuple(
+    n.strip() for n in os.environ.get(
+        "INCIDENTS_NON_BLOQUANTS", "StackRoxPolicyViolation").split(",")
+    if n.strip())
+# Au-dela de cette fenetre, une ligne encore `open` n'est plus un feu : c'est
+# un `resolved` qui s'est perdu. Six heures couvrent tres largement un
+# incident reel sur ce cluster.
+INCIDENT_FENETRE_H = int(os.environ.get("INCIDENT_FENETRE_H", "6"))
 
 # Compteurs exposés dans le /metrics du bridge (méta-observabilité : si
 # errors monte, la base d'incidents décroche du réel sans casser l'agent).
@@ -99,6 +112,37 @@ def _active(fp):
                        "&status=neq.closed&order=opened_at.desc&limit=1"
                        "&select=id,status,acked_at,alertname")
     return rows[0] if rows else None
+
+
+def incidents_bloquants():
+    """Les incidents de PRODUCTION en cours. [] veut dire « la voie est libre ».
+
+    Lue par le bridge juste avant `maybe_open_pr`, cette liste alimente le
+    label `incident_ouvert` de la porte du registre (E2, decision n° 2).
+
+    Ne leve JAMAIS : l'indisponibilite de la base ne doit pas rendre l'agent
+    muet — c'est le reglage n° 3, et il est deliberement l'inverse de celui de
+    la dedup. Ici le doute profite a l'action.
+    """
+    if not enabled():
+        return []
+    depuis = (datetime.now(timezone.utc)
+              - timedelta(hours=INCIDENT_FENETRE_H)).isoformat()
+    filtre = ""
+    if INCIDENTS_NON_BLOQUANTS:
+        filtre = ("&alertname=not.in.("
+                  + ",".join(_q(n) for n in INCIDENTS_NON_BLOQUANTS) + ")")
+    try:
+        rows = _req("GET", "/incidents?status=in.(open,acked)"
+                           f"&opened_at=gte.{_q(depuis)}{filtre}"
+                           "&order=opened_at.desc&limit=5"
+                           "&select=id,alertname,severity,opened_at")
+    except Exception as e:
+        counters["errors"] += 1
+        log(f"incidents en cours indetermines ({e}) : la porte reste OUVERTE "
+            f"— une PR de trop se rattrape, un agent muet ne se voit pas")
+        return []
+    return rows or []
 
 
 def _still_firing(alertname):
