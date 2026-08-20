@@ -41,9 +41,11 @@ def rep(*etats):
     return lambda q: {"alerts": [{"state": e} for e in etats]}
 
 
-def casse(exc=RuntimeError("Central 503")):
+def casse(exc=None):
+    err = exc or RuntimeError("Central 503")
+
     def get(q):
-        raise exc
+        raise err
     return get
 
 
