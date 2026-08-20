@@ -1172,8 +1172,7 @@ def _maybe_remediate(analysis, labels, fp):
     # correctif encore en vol vaut incident en cours. Le signal exact viendra
     # de l'API incident-tool en phase F.
     labels = dict(labels)
-    with _lock:
-        labels["incident_ouvert"] = bool(_prs)
+    labels["incident_ouvert"] = bool(incident_adapter and incident_adapter.incidents_bloquants())
     try:
         res, reason = remediation.maybe_open_pr(analysis, labels)
     except Exception as e:
