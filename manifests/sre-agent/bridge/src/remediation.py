@@ -709,7 +709,7 @@ def maybe_open_pr(analysis, labels):
     _escalader_arbitrages(arbitrages, fkey, labels, repo, token,
                           pr_url=pr["html_url"])
     return {"url": pr["html_url"], "number": pr["number"],
-            "title": title, "branch": branch}, None
+            "title": title, "branch": branch, "fkey": fkey, "labels": labels}, None
 
 
 def pr_status(number):

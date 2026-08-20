@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+import rescan
 from security_context import collect, extract_cves
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -815,6 +816,7 @@ def _confirm_remedies(rev, stable, detail=""):
         matches = [(fp, dict(i)) for fp, i in _prs.items()
                    if i.get("merge_sha", "")[:7] == rev[:7]]
     for fp, info in matches:
+        rescan.confirmer_pr(info, slack_post)
         when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         if stable:
             _metrics["remedies_confirmed"] += 1
@@ -1187,7 +1189,7 @@ def _maybe_remediate(analysis, labels, fp):
     if res:
         _metrics["remediation_prs_opened"] += 1
         with _lock:
-            _prs[fp] = {"t": time.time(), "number": res["number"],
+            _prs[fp] = {"t": time.time(), "number": res["number"], "fkey": res.get("fkey", ""), "labels": res.get("labels", {}),
                         "url": res["url"], "title": res.get("title", ""),
                         "alert": labels.get("alertname", "?"),
                         # cible du patch — clé de la dédup par cible
