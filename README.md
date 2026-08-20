@@ -227,6 +227,7 @@ preuve que l'image ne tourne pas en root, `readOnlyRootFilesystem` parce
 qu'aucune lecture statique ne dit où un programme écrit. Ces deux clés partent
 dans une issue liée, avec la même justification — le travail d'analyse n'est
 jamais jeté.*
+
 ### Ce qui le rend supportable
 
 Un agent qui propose sans mesure devient un agent qu'on ignore. Trois mécanismes
