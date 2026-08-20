@@ -37,6 +37,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import escalation
 import findings_ledger
 import hardening_rules
 import security_rules
@@ -408,7 +409,7 @@ def _build_patch(parsed, repo, base, token):
     return files, title, diff, reason, "fix"
 
 
-def _build_hardening(m, repo, base, token):
+def _build_hardening(m, repo, base, token, arbitrages=None):
     """HARDEN_PROPOSAL -> le meme quintuplet que _build_patch.
 
     L'allow-list des FICHIERS est celle des patchs : durcir un manifeste hors
@@ -435,6 +436,10 @@ def _build_hardening(m, repo, base, token):
     vue = hardening_rules.analyser(text, index)
     if not vue["ok"]:
         raise _Reject(f"harden-{vue['raison']}")
+    # F : les clés à arbitrer remontent AVANT le refus « rien-de-licite », pour
+    # que le cas « tout est à arbitrer » produise une issue lui aussi.
+    if arbitrages is not None and vue["issue"]:
+        arbitrages.extend(vue["issue"])
     licites = [c for c in cles if c in vue["proposer"]]
     refusees = [c for c in cles if c not in vue["proposer"]]
     if not licites:
@@ -502,6 +507,107 @@ def _build_rollback(m, repo, base, token):
 
 
 # ---------------------------------------------------------------------------
+#  F : l'escalade — ce que l'agent renvoie à un humain plutôt que de le faire
+# ---------------------------------------------------------------------------
+def _issue_gh(token):
+    """Le client que reçoit escalation.py : `_gh` avec son jeton déjà lié.
+
+    Le module d'escalade ne connaît ni le secret, ni l'URL de l'API, ni le
+    format des en-têtes. Même principe que `statut_pr` passé au registre en
+    E2 : ce qui décide ne touche pas au réseau.
+    """
+    def appel(method, path, body=None):
+        return _gh(method, path, body, token=token)
+    return appel
+
+
+def _fkey(labels):
+    """La clé du PROBLÈME — la même que celle du registre, à l'identique."""
+    return findings_ledger.finding_key(
+        cve=labels.get("cve"), policy=labels.get("policy"),
+        deployment=labels.get("deployment"), namespace=labels.get("namespace"))
+
+
+# Les seuls refus qui appellent un jugement humain. Un refus absent de cette
+# table ne produit AUCUNE issue : « yaml-path-not-found » est un défaut de
+# l'agent, « stale-old » est un état périmé — ni l'un ni l'autre ne se décide.
+REFUS_ESCALADES = {
+    "image-major": (
+        "bump majeur à arbitrer",
+        "L'agent ne propose jamais de montée de version majeure : le format "
+        "des données sur disque, les API et les migrations ne se déduisent "
+        "pas d'un numéro de version. La décision revient à un humain."),
+    "harden-rien-de-licite": (
+        "durcissement à arbitrer",
+        "Aucune des clés proposées n'est ajoutable automatiquement sur ce "
+        "conteneur : chacune demande une information ou une décision que le "
+        "manifeste ne porte pas."),
+    "ledger-trop-de-tentatives": (
+        "correctif sans effet mesurable",
+        "Plusieurs correctifs ont été proposés sans que le rescan confirme "
+        "la disparition du problème. L'agent arrête d'insister : à ce stade, "
+        "ce n'est plus la version proposée qui est en cause."),
+}
+
+
+def _escalader(fkey, sujet, resume, raisons, labels, repo, token):
+    """Ouvre l'issue, puis l'enregistre au registre. Ne lève JAMAIS.
+
+    Une escalade qui plante empêcherait la remédiation qui l'entoure de se
+    terminer — et le diagnostic Slack, lui, est déjà parti.
+    """
+    try:
+        r = escalation.ouvrir(
+            fkey, sujet, resume, raisons=raisons,
+            contexte=[(cle, labels[cle]) for cle in
+                      ("policy", "deployment", "namespace", "severity")
+                      if labels.get(cle)],
+            source="StackRox · EPSS (FIRST.org) · CISA KEV",
+            repo=repo, gh=_issue_gh(token),
+            deployment=labels.get("deployment"),
+            namespace=labels.get("namespace"),
+            labels=[labels.get("severity", "")])
+    except Exception as e:
+        print(f"[remediation] escalade impossible : {e}", flush=True)
+        return None
+    if r["ok"]:
+        # Le module d'escalade n'écrit pas dans le registre (sa décision n° 8) :
+        # une seule couche tient l'état, et c'est celle-ci.
+        findings_ledger.marquer_issue(fkey, r.get("url", ""))
+    else:
+        print(f"[remediation] escalade non ouverte ({r['raison']}) : "
+              f"{r['detail']}", flush=True)
+    return r
+
+
+def _escalader_refus(raison, labels, repo, token):
+    """Un refus listé devient une issue ; les autres restent des logs."""
+    for prefixe, (sujet, explication) in REFUS_ESCALADES.items():
+        if raison.startswith(prefixe):
+            return _escalader(_fkey(labels), sujet, explication,
+                              [(prefixe, raison)], labels, repo, token)
+    return None
+
+
+def _escalader_arbitrages(arbitrages, fkey, labels, repo, token, pr_url=""):
+    """Les clés écartées d'une PR de durcissement qui, elle, est partie.
+
+    C'est le cas le plus facile à perdre : la PR existe, donc tout a l'air
+    d'avoir fonctionné — et les clés à arbitrer disparaissent avec le log.
+    """
+    if not arbitrages:
+        return None
+    resume = ("Ces clés de durcissement n'ont pas été ajoutées "
+              "automatiquement : chacune demande une information ou une "
+              "décision que le manifeste ne porte pas.")
+    if pr_url:
+        resume += (f"\n\nLes clés effectivement ajoutables ont été proposées "
+                   f"en PR : {pr_url}")
+    return _escalader(fkey, "durcissement à arbitrer", resume,
+                      arbitrages, labels, repo, token)
+
+
+# ---------------------------------------------------------------------------
 #  Point d'entrée
 # ---------------------------------------------------------------------------
 def maybe_open_pr(analysis, labels):
@@ -515,6 +621,7 @@ def maybe_open_pr(analysis, labels):
     if not patch and not rb and not hd:
         return None, "no-proposal"
     token, repo, base = _cfg("token"), _cfg("repo"), _cfg("base")
+    arbitrages = []          # F : rempli par _build_hardening, lu tout en bas
     alert = labels.get("alertname", "alert")
     severity = labels.get("severity", "")
     try:
@@ -523,11 +630,13 @@ def maybe_open_pr(analysis, labels):
                 patch, repo, base, token)
         elif hd:
             files, title, diff, reason, kind = _build_hardening(
-                hd, repo, base, token)
+                hd, repo, base, token, arbitrages)
         else:
             files, title, diff, reason, kind = _build_rollback(
                 rb, repo, base, token)
     except _Reject as r:
+        # F : le tri a été fait, il ne repart plus dans un log.
+        _escalader_refus(str(r), labels, repo, token)
         return None, str(r)
 
     # --- E2 : la porte du registre ---------------------------------------
@@ -542,6 +651,10 @@ def maybe_open_pr(analysis, labels):
         fkey, pkey, statut_pr=pr_status,
         incident_ouvert=bool(labels.get("incident_ouvert")))
     if not porte["ok"]:
+        # F : seul « trop-de-tentatives » figure dans REFUS_ESCALADES — un
+        # incident en cours ou un plafond atteint ne se décident pas, ils
+        # passent.
+        _escalader_refus(f"ledger-{porte['raison']}", labels, repo, token)
         return None, f"ledger-{porte['raison']}: {porte['detail']}"
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -591,6 +704,10 @@ def maybe_open_pr(analysis, labels):
     # cycle de scan rouvrirait exactement la meme.
     findings_ledger.marquer_proposee(fkey, pkey, pr=pr["number"],
                                      url=pr["html_url"], resume=title)
+    # F : la PR est partie, mais des clés restaient à arbitrer. Sans cette
+    # ligne elles disparaissent — et tout a pourtant l'air d'avoir marché.
+    _escalader_arbitrages(arbitrages, fkey, labels, repo, token,
+                          pr_url=pr["html_url"])
     return {"url": pr["html_url"], "number": pr["number"],
             "title": title, "branch": branch}, None
 
