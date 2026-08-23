@@ -11,7 +11,7 @@ metadata:
   name: frontend
   namespace: online-boutique
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: frontend
@@ -47,7 +47,7 @@ spec:
               value: "local"
           resources:
             requests:
-              cpu: 100m
+              cpu: 150m
               memory: 64Mi
             limits:
               cpu: 200m
@@ -57,13 +57,13 @@ spec:
               path: /_healthz
               port: 8080
             initialDelaySeconds: 10
-            periodSeconds: 5
+            periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /_healthz
               port: 8080
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 3
 ---
