@@ -40,7 +40,7 @@ include:
 # =============================================================================
 validate:
   stage: validate
-  image: alpine:3.20
+  image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
   <<: *regles_defaut
   before_script:
     - apk add --no-cache curl tar
@@ -83,7 +83,7 @@ validate:
 # =============================================================================
 agent:lint:
   stage: test
-  image: python:3.11-slim
+  image: python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes: [manifests/sre-agent/**/*]
@@ -95,7 +95,7 @@ agent:lint:
 
 agent:test:
   stage: test
-  image: python:3.11-slim          # même interpréteur que l'image du bridge
+  image: python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534          # même interpréteur que l'image du bridge
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes: [manifests/sre-agent/**/*]
@@ -110,7 +110,7 @@ agent:test:
 # =============================================================================
 secrets:
   stage: security
-  image: zricethezav/gitleaks:v8.28.0
+  image: zricethezav/gitleaks:v8.28.0@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854
   variables:
     GIT_DEPTH: 0                   # TOUT l'historique, jamais le dernier commit
   <<: *regles_defaut
@@ -172,8 +172,8 @@ radar-high:
 # =============================================================================
 build-sign:
   stage: build
-  image: docker:27
-  services: [docker:27-dind]
+  image: docker:27@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+  services: [docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce]
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
