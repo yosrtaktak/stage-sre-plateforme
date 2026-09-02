@@ -10,7 +10,7 @@
 #  Destination : manifests/sre-agent/bridge/Dockerfile
 #  Build CI    : .github/workflows/build-images.yml (trivy image + SBOM + cosign)
 # =============================================================================
-FROM python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
+FROM python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
 
 # Processus non-root dédié : la policy no-runAsRoot de l'admission StackRox
 # passera sans exception, et readOnlyRootFilesystem devient possible côté
