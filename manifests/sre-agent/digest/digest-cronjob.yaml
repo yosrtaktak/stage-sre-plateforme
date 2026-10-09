@@ -25,7 +25,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: digest
-              image: python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
+              image: python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
               command: ["python", "/app/digest.py"]
               volumeMounts:
                 - { name: script, mountPath: /app, readOnly: true }
